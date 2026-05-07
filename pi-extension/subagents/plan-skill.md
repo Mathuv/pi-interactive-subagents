@@ -58,7 +58,8 @@ Standard filenames:
 
 - `.pi/plans/YYYY-MM-DD-<name>/scout-context.md`
 - `.pi/plans/YYYY-MM-DD-<name>/plan.md`
-- `.pi/plans/YYYY-MM-DD-<name>/review.md` (optional, for reviewer output)
+- `.pi/plans/YYYY-MM-DD-<name>/review-TODO-xxxx.md` (per-todo reviewer output, when mode is `full` or `ask-me`)
+- `.pi/plans/YYYY-MM-DD-<name>/review.md` (final reviewer output, when mode is `full`, `final-only`, or `ask-me`)
 
 ---
 
@@ -141,49 +142,152 @@ Review with the user:
 
 > "Here's what the planner produced: [brief summary]. Ready to execute, or anything to adjust?"
 
+### Review Mode Selection
+
+Before starting execution, ask the user which review mode to use:
+
+> "What review mode for this run?"
+> - **`full`** — auto-review after every todo + final review at the end
+> - **`final-only`** — skip per-todo reviews, run final review after all workers
+> - **`ask-me`** — I'll prompt you after each worker and at the end
+> - **`none`** — no reviews at all
+>
+> Default: `full`
+
+Each review is a **single combined review**: the reviewer checks spec compliance first, then code quality/security/correctness. Do not spawn separate spec-compliance and quality reviewers unless the user explicitly asks for split reviews.
+
+Remember the chosen mode — it governs review behavior in Phase 5 and Phase 6.
+
 ---
 
 ## Phase 5: Execute Todos
 
-Spawn workers sequentially. Each worker gets the plan path and scout context:
+> **Review mode:** [echo the mode chosen in Phase 4 here, e.g. `full` / `ask-me` / `final-only` / `none`]
+
+Spawn workers sequentially. Each worker gets the plan path and scout context. After each worker, run the review gate based on the chosen mode:
 
 ```typescript
 // Workers execute todos sequentially — one at a time
+// Review mode: [mode] — applied after each worker below
 subagent({
   name: "🔨 Worker 1/N",
   agent: "worker",
   task: "Implement TODO-xxxx. Mark the todo as done. Plan: [plan path]\n\nScout context: [paste scout summary from Phase 2, plus any re-scout from Phase 3]",
 });
 
-// Check result, then next todo
-subagent({
-  name: "🔨 Worker 2/N",
-  agent: "worker",
-  task: "Implement TODO-yyyy. Mark the todo as done. Plan: [plan path]\n\nScout context: [paste scout summary]",
-});
+// After worker finishes — check for failure first:
+// If the worker crashed or exited non-zero:
+//   → Do NOT run the review gate
+//   → Surface the error to the user
+//   → Ask: "Worker failed on TODO-xxxx. Retry, skip, or abort?"
+// If the worker succeeded — run review gate based on mode:
 ```
 
 **Always run workers sequentially in the same git repo** — parallel workers will conflict on commits.
 
----
+### Per-Todo Review Gate
 
-## Phase 6: Review
+After each worker finishes, apply the review gate:
 
-After all todos are complete:
+- **`full`** → auto-spawn one reviewer for spec compliance + quality, scoped to `git diff HEAD~1..HEAD`, save output to `review-TODO-xxxx.md`
+- **`ask-me`** → prompt user: "Run a spec + quality review for TODO-xxxx?" — spawn reviewer if yes
+- **`final-only`** / **`none`** → skip
+
+Before spawning the reviewer, read the todo body so the reviewer can check spec compliance without needing the todo tool:
+
+```typescript
+todo({ action: "get", id: "TODO-xxxx" });
+```
+
+**Reviewer task template (single reviewer checks spec compliance + quality):**
 
 ```typescript
 subagent({
-  name: "Reviewer",
+  name: "🔍 Review TODO-xxxx",
+  agent: "reviewer",
+  task: `Review TODO-xxxx in two passes.
+
+Pass 1 — Spec compliance:
+Compare the diff against the TODO body, plan, and any relevant ISC/acceptance criteria. Flag missing requirements, out-of-scope behavior, or plan drift as P1 unless the mismatch creates a P0 production/security risk.
+
+Pass 2 — Quality/security/correctness:
+Review for bugs, security issues, maintainability traps, and correctness problems introduced by this commit.
+
+Diff scope: git diff HEAD~1..HEAD
+Plan: [plan path]
+TODO body:
+[paste todo({ action: "get", id: "TODO-xxxx" }) body here]
+
+Save findings to: .pi/plans/YYYY-MM-DD-<name>/review-TODO-xxxx.md`,
+});
+```
+
+### P0/P1 Fixup Loop
+
+If the per-todo review finds P0/P1 issues or spec-compliance gaps:
+
+1. Create a fixup todo for the issues found
+2. Spawn a fixup worker to address them
+3. Run the review gate again for the fixup (same mode, same diff scope)
+4. **Cap fixup attempts at 2 per original todo.** After 2 failed attempts, surface the remaining issues to the user and ask whether to proceed or stop.
+
+Fixup workers follow the same review mode as the rest of the plan — no special-casing.
+
+```typescript
+// Fixup worker (spawned after P0/P1/spec-compliance issues found in per-todo review)
+subagent({
+  name: "🔧 Fixup Worker (TODO-xxxx attempt 1/2)",
+  agent: "worker",
+  task: "Fix P0/P1/spec-compliance issues found in review of TODO-xxxx. Issues: [paste P0/P1/spec gap list]. Plan: [plan path]",
+});
+```
+
+---
+
+## Phase 6: Final Review
+
+> **Review mode:** [echo the mode chosen in Phase 4 here]
+
+After all todos are complete, run the final review gate based on the chosen mode:
+
+- **`full`** or **`final-only`** → auto-spawn one reviewer for final spec compliance + quality, save output to `review.md`
+- **`ask-me`** → prompt user: "Run a final spec + quality review of all changes?" — spawn reviewer if yes, save to `review.md`
+- **`none`** → skip — go directly to the completion checklist
+
+Before spawning the final reviewer, collect todo context so the reviewer can check spec compliance without needing the todo tool:
+
+```typescript
+todo({ action: "list" });
+// Paste completed todo IDs/titles and any important acceptance criteria into the reviewer task.
+```
+
+When spawning the final reviewer:
+
+```typescript
+subagent({
+  name: "Reviewer (final)",
   agent: "reviewer",
   interactive: false,
-  task: "Review the recent changes. Plan: [plan path]",
+  task: `Review all changes in this plan in two passes.
+
+Pass 1 — Spec compliance:
+Compare the completed implementation against the plan, todo summary, ISC, and accepted scope. Flag missing requirements, out-of-scope behavior, or plan drift as P1 unless the mismatch creates a P0 production/security risk.
+
+Pass 2 — Quality/security/correctness:
+Review for bugs, security issues, maintainability traps, integration issues, and correctness problems across the full implementation.
+
+Plan: [plan path]
+Todo summary:
+[paste completed todo IDs/titles and important acceptance criteria here]
+
+Save findings to: [plan dir]/review.md`,
 });
 ```
 
 Triage findings:
 
 - **P0** — Real bugs, security issues → fix now
-- **P1** — Genuine traps, maintenance dangers → fix before merging
+- **P1** — Spec-compliance gaps, genuine traps, maintenance dangers → fix before merging
 - **P2** — Minor issues → fix if quick, note otherwise
 - **P3** — Nits → skip
 
@@ -199,5 +303,5 @@ Before reporting done:
 2. ✅ Scout context was passed to the planner?
 3. ✅ All worker todos closed?
 4. ✅ Every todo has a polished commit (using the `commit` skill)?
-5. ✅ Reviewer has run?
-6. ✅ Reviewer findings triaged and addressed?
+5. ✅ Spec-compliance + quality reviews completed per chosen mode? (`full` → per-todo + final ran; `final-only` → final ran; `ask-me` → user was prompted at each gate; `none` → skipped intentionally)
+6. ✅ Review findings and spec gaps triaged and addressed (if any reviews ran)?
