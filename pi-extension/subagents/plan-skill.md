@@ -98,7 +98,9 @@ Scout context:
 [paste scout findings here — file structure, conventions, patterns, relevant code]
 
 Save the final plan to: .pi/plans/YYYY-MM-DD-<name>/plan.md
-Create todos tagged with: <name>`,
+Create todos tagged with: <name>
+
+For every todo, prefix the title with [tdd] for behavior-changing work (features, bug fixes, logic/API changes) or [no-tdd] for non-behavioral work (config, docs, scaffolding, type-only/refactor-only changes). Always add these markers — the orchestrator selects TDD mode after planning and uses them for smart mode filtering.`,
 });
 ```
 
@@ -156,13 +158,23 @@ Before starting execution, ask the user which review mode to use:
 
 Each review is a **single combined review**: the reviewer checks spec compliance first, then code quality/security/correctness. Do not spawn separate spec-compliance and quality reviewers unless the user explicitly asks for split reviews.
 
-Remember the chosen mode — it governs review behavior in Phase 5 and Phase 6.
+### TDD Mode Selection
+
+> "What TDD mode for this run?"
+> - **`on`** — all todos get TDD enforcement: workers write a failing test before implementing
+> - **`smart`** — only behavior-changing todos (marked `[tdd]` by planner) get TDD enforcement; config/docs/refactor todos skip it
+> - **`off`** — no TDD enforcement, current behavior
+>
+> Default: `smart`
+
+Remember both modes — they govern behavior in Phase 5 and Phase 6.
 
 ---
 
 ## Phase 5: Execute Todos
 
 > **Review mode:** [echo the mode chosen in Phase 4 here, e.g. `full` / `ask-me` / `final-only` / `none`]
+> **TDD mode:** [echo the mode chosen in Phase 4 here, e.g. `on` / `smart` / `off`]
 
 Spawn workers sequentially. Each worker gets the plan path and scout context. After each worker, run the review gate based on the chosen mode:
 
@@ -185,6 +197,24 @@ subagent({
 
 **Always run workers sequentially in the same git repo** — parallel workers will conflict on commits.
 
+### TDD Enforcement
+
+Before spawning each worker, check whether TDD mode applies to that todo:
+
+- **`on`** → always append the TDD block to the worker task text
+- **`smart`** → append the TDD block if the todo title/body contains `[tdd]`, OR if the todo has neither `[tdd]` nor `[no-tdd]` marker (unmarked = tdd-applicable)
+- **`off`** → do not append anything (identical to current behavior)
+
+When TDD mode is active for a todo, append this block to the worker task text:
+
+```
+TDD Mode: ON for this todo.
+Before implementing, write a failing test that captures the expected behavior.
+Run the test to confirm it fails. Then implement until the test passes.
+Commit sequence: test first (failing), then implementation (passing).
+If no test framework exists yet, set one up as part of this todo.
+```
+
 ### Per-Todo Review Gate
 
 After each worker finishes, apply the review gate:
@@ -205,7 +235,7 @@ todo({ action: "get", id: "TODO-xxxx" });
 subagent({
   name: "🔍 Review TODO-xxxx",
   agent: "reviewer",
-  task: `Review TODO-xxxx in two passes.
+  task: `Review TODO-xxxx.
 
 Pass 1 — Spec compliance:
 Compare the diff against the TODO body, plan, and any relevant ISC/acceptance criteria. Flag missing requirements, out-of-scope behavior, or plan drift as P1 unless the mismatch creates a P0 production/security risk.
@@ -220,6 +250,13 @@ TODO body:
 
 Save findings to: .pi/plans/YYYY-MM-DD-<name>/review-TODO-xxxx.md`,
 });
+```
+
+When TDD mode is `on`, or `smart` and this todo is tdd-applicable, append a third pass to the reviewer task:
+
+```
+Pass 3 — TDD evidence (P2 only):
+Check that test files were added/modified covering the behavior introduced in this commit. Flag missing test coverage as P2 (advisory). Do NOT flag as P0/P1 — TDD non-compliance is guidance, not a blocker.
 ```
 
 ### P0/P1 Fixup Loop
@@ -240,6 +277,12 @@ subagent({
   agent: "worker",
   task: "Fix P0/P1/spec-compliance issues found in review of TODO-xxxx. Issues: [paste P0/P1/spec gap list]. Plan: [plan path]",
 });
+```
+
+When TDD mode is `on`, or `smart` and the original todo was tdd-applicable, append to the fixup worker task:
+
+```
+Include a regression test that covers the fix. If fixing a failing test, ensure it passes after your change.
 ```
 
 ---
@@ -268,7 +311,7 @@ subagent({
   name: "Reviewer (final)",
   agent: "reviewer",
   interactive: false,
-  task: `Review all changes in this plan in two passes.
+  task: `Review all changes in this plan.
 
 Pass 1 — Spec compliance:
 Compare the completed implementation against the plan, todo summary, ISC, and accepted scope. Flag missing requirements, out-of-scope behavior, or plan drift as P1 unless the mismatch creates a P0 production/security risk.
@@ -282,6 +325,13 @@ Todo summary:
 
 Save findings to: [plan dir]/review.md`,
 });
+```
+
+When TDD mode is not `off`, append a third pass to the final reviewer task:
+
+```
+Pass 3 — TDD evidence (P2 only):
+Check that behavior-changing commits have associated test files. Flag missing coverage as P2. This is advisory — do not block on it.
 ```
 
 Triage findings:
@@ -304,4 +354,5 @@ Before reporting done:
 3. ✅ All worker todos closed?
 4. ✅ Every todo has a polished commit (using the `commit` skill)?
 5. ✅ Spec-compliance + quality reviews completed per chosen mode? (`full` → per-todo + final ran; `final-only` → final ran; `ask-me` → user was prompted at each gate; `none` → skipped intentionally)
-6. ✅ Review findings and spec gaps triaged and addressed (if any reviews ran)?
+6. ✅ TDD mode followed per chosen setting? (`on` → all workers got TDD instructions; `smart` → applicable todos got TDD instructions; `off` → no TDD language injected)
+7. ✅ Review findings and spec gaps triaged and addressed (if any reviews ran)?

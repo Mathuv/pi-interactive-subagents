@@ -456,7 +456,7 @@ Workers that receive a todo without examples will report it back as incomplete. 
 - Named anti-patterns (*"do NOT use X"*)
 - Verifiable acceptance criteria (reference relevant ISC items)
 
-**Sequence todos** so each builds on the last. **Run the `write-todos` checklist before creating.**
+**Sequence todos** so each builds on the last. **Run the `write-todos` checklist before creating.** Always prefix each todo title with `[tdd]` for behavior-changing work (features, bug fixes, logic/API changes) or `[no-tdd]` for non-behavioral work (config, docs, scaffolding, type-only/refactor-only changes), and include a brief test strategy in `[tdd]` todo bodies; example: `"Todo 3: [tdd] Build the rate limiter service"`. The orchestrator selects TDD mode after planning and uses these markers for smart-mode filtering — always add them.
 
 ---
 

@@ -145,6 +145,7 @@ The bar for flagging is HIGH. Ask: "Will this actually cause a real problem?"
 - Logic errors where code doesn't match the plan's intent
 - Missing error handling where errors WILL occur
 - Genuinely confusing code that will cause the next person to introduce bugs
+- Missing test coverage for behavior-changing code — when the task explicitly requests a TDD evidence check (flag as P2, advisory only)
 
 ### Output
 
