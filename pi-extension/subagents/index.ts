@@ -103,6 +103,9 @@ const SubagentParams = Type.Object({
   tools: Type.Optional(
     Type.String({ description: "Comma-separated tools (overrides agent default)" }),
   ),
+  thinking: Type.Optional(
+    Type.String({ description: "Thinking level override (e.g. 'minimal', 'medium', 'high')" }),
+  ),
   cwd: Type.Optional(
     Type.String({
       description:
@@ -873,6 +876,101 @@ function resolveResumeLaunchBehavior(params: { autoExit?: boolean }): { autoExit
   return { autoExit, interactive: !autoExit };
 }
 
+interface AgentSettingsOverrides {
+  model?: string;
+  thinking?: string;
+  tools?: string;
+  skills?: string;
+}
+
+const AGENT_SETTINGS_ALLOWED_KEYS = ["model", "thinking", "tools", "skills"];
+
+function invalidAgentSettings(source: string, message: string): never {
+  throw new Error(`Invalid agent settings in ${source}: ${message}`);
+}
+
+function requireAgentObject(value: unknown, source: string, fieldName: string): Record<string, unknown> {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    invalidAgentSettings(source, `${fieldName} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function rejectUnsupportedAgentKeys(
+  value: Record<string, unknown>,
+  allowedKeys: string[],
+  source: string,
+  fieldName: string,
+): void {
+  const unsupportedKeys = Object.keys(value).filter((key) => !allowedKeys.includes(key));
+  if (unsupportedKeys.length > 0) {
+    invalidAgentSettings(source, `${fieldName} has unsupported key(s): ${unsupportedKeys.join(", ")}`);
+  }
+}
+
+function loadAgentSettingsFile(): Record<string, AgentSettingsOverrides> | null {
+  const configPath = join(getAgentConfigDir(), "agents.json");
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, "utf8");
+  } catch (error) {
+    const errno = error as NodeJS.ErrnoException;
+    if (errno.code === "ENOENT") return null;
+    throw error;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid JSON in agent settings ${configPath}: ${detail}`);
+  }
+
+  const root = requireAgentObject(parsed, configPath, "root");
+  const result: Record<string, AgentSettingsOverrides> = Object.create(null) as Record<string, AgentSettingsOverrides>;
+  for (const [agentName, value] of Object.entries(root)) {
+    const block = requireAgentObject(value, configPath, `"${agentName}"`);
+    rejectUnsupportedAgentKeys(block, AGENT_SETTINGS_ALLOWED_KEYS, configPath, `"${agentName}"`);
+    for (const key of AGENT_SETTINGS_ALLOWED_KEYS) {
+      if (key in block && typeof block[key] !== "string") {
+        invalidAgentSettings(configPath, `"${agentName}.${key}" must be a string`);
+      }
+    }
+    const overrides: AgentSettingsOverrides = {};
+    if ("model" in block) overrides.model = block.model as string;
+    if ("thinking" in block) overrides.thinking = block.thinking as string;
+    if ("tools" in block) overrides.tools = block.tools as string;
+    if ("skills" in block) overrides.skills = block.skills as string;
+    result[agentName] = overrides;
+  }
+  return result;
+}
+
+let agentSettings: Record<string, AgentSettingsOverrides> | null = loadAgentSettingsFile();
+
+function loadAgentSettings(agentName: string): AgentSettingsOverrides | null {
+  if (!agentSettings) return null;
+  return Object.hasOwn(agentSettings, agentName) ? agentSettings[agentName] : null;
+}
+
+function reloadAgentSettingsForTest(): void {
+  agentSettings = loadAgentSettingsFile();
+}
+
+function resolveEffectiveAgentParams(
+  params: { model?: string; thinking?: string; tools?: string; skills?: string },
+  settings: AgentSettingsOverrides | null,
+  agentDefs: AgentDefaults | null,
+): { model?: string; thinking?: string; tools?: string; skills?: string } {
+  return {
+    model: params.model ?? settings?.model ?? agentDefs?.model,
+    thinking: params.thinking ?? settings?.thinking ?? agentDefs?.thinking,
+    tools: params.tools ?? settings?.tools ?? agentDefs?.tools,
+    skills: params.skills ?? settings?.skills ?? agentDefs?.skills,
+  };
+}
+
 export const __test__ = {
   borderLine,
   getShellReadyDelayMs,
@@ -892,6 +990,10 @@ export const __test__ = {
   handleSubagentInterrupt,
   resolveResultPresentation,
   resolveResumeLaunchBehavior,
+  loadAgentSettingsFile,
+  loadAgentSettings,
+  reloadAgentSettingsForTest,
+  resolveEffectiveAgentParams,
   runningSubagents,
 };
 
@@ -919,10 +1021,9 @@ async function launchSubagent(
   const id = Math.random().toString(16).slice(2, 10);
 
   const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null;
-  const effectiveModel = params.model ?? agentDefs?.model;
-  const effectiveTools = params.tools ?? agentDefs?.tools;
-  const effectiveSkills = params.skills ?? agentDefs?.skills;
-  const effectiveThinking = agentDefs?.thinking;
+  const settings = params.agent ? loadAgentSettings(params.agent) : null;
+  const { model: effectiveModel, thinking: effectiveThinking, tools: effectiveTools, skills: effectiveSkills } =
+    resolveEffectiveAgentParams(params, settings, agentDefs);
   const effectiveInteractive = resolveEffectiveInteractive(params, agentDefs);
 
   const sessionFile = ctx.sessionManager.getSessionFile();

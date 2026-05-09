@@ -173,10 +173,47 @@ subagent({ name: "Designer", agent: "game-designer", cwd: "agents/game-designer"
 | `fork`                 | boolean | `false`        | Force the full-context fork mode for this spawn, overriding any agent `session-mode` frontmatter  |
 | `interactive`          | boolean | derived        | Mark this spawn as interactive (don't wake the parent on stall/recovery). Defaults to the agent's `interactive` frontmatter, otherwise the inverse of `auto-exit`. |
 | `model`                | string  | —              | Override agent's default model                                                                    |
+| `thinking`             | string  | —              | Thinking level override (e.g. `minimal`, `medium`, `high`)                                        |
 | `systemPrompt`         | string  | —              | Append to system prompt                                                                           |
 | `skills`               | string  | —              | Comma-separated skill names                                                                       |
 | `tools`                | string  | —              | Comma-separated tool names                                                                        |
 | `cwd`                  | string  | —              | Working directory for the sub-agent (see [Role Folders](#role-folders))                           |
+
+---
+
+## Agent Configuration Overrides
+
+Override agent parameters globally by creating `~/.pi/agent/agents.json`:
+
+```json
+{
+  "worker": {
+    "model": "anthropic/claude-sonnet-4-6",
+    "thinking": "medium",
+    "tools": "read,bash,write,edit",
+    "skills": "commit,github"
+  },
+  "scout": {
+    "model": "anthropic/claude-haiku-4"
+  },
+  "planner": {
+    "thinking": "high"
+  }
+}
+```
+
+Top-level keys are agent names. Each agent block accepts these optional fields:
+
+| Key       | Type   | Description                              |
+| --------- | ------ | ---------------------------------------- |
+| `model`   | string | Provider/model name                      |
+| `thinking`| string | Thinking level string passed through to Pi/provider (e.g. `minimal`, `medium`, `high`) |
+| `tools`   | string | Comma-separated tool names               |
+| `skills`  | string | Comma-separated skill names              |
+
+**Override precedence:** tool params > `agents.json` > agent `.md` frontmatter.
+
+Unused entries in `agents.json` cause no errors. However, an explicit `subagent({ agent: "foo" })` call will still pick up any `agents.json.foo` overrides even if no `foo.md` definition file exists — `.md` files are only required for discovery surfaces like `subagents_list`. Invalid JSON or unknown keys in an agent block raise a clear error. Copy `agents.json.example` in the repo root to get started.
 
 ---
 
@@ -296,7 +333,7 @@ You are a specialized agent that does X...
 | `name`        | string  | Agent name (used in `agent: "my-agent"`)                                                                                                                                                                                                                                    |
 | `description` | string  | Shown in `subagents_list` output                                                                                                                                                                                                                                            |
 | `model`       | string  | Default model (e.g. `anthropic/claude-sonnet-4-6`)                                                                                                                                                                                                                          |
-| `thinking`    | string  | Thinking level: `minimal`, `medium`, `high`                                                                                                                                                                                                                                 |
+| `thinking`    | string  | Thinking level string passed through to Pi/provider (e.g. `minimal`, `medium`, `high`)                                                                                                                                                                                                                                 |
 | `tools`       | string  | Comma-separated **native pi tools only**: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`                                                                                                                                                                             |
 | `skills`      | string  | Comma-separated skill names to auto-load                                                                                                                                                                                                                                    |
 | `session-mode` | string | Default child-session mode: `standalone`, `lineage-only`, or `fork` |

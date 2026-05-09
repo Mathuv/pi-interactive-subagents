@@ -2194,4 +2194,364 @@ describe("cmux.ts", () => {
       assert.equal(typeof result, "boolean");
     });
   });
+
+  describe("loadAgentSettingsFile / loadAgentSettings", () => {
+    it("returns null when agents.json does not exist", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          const testApi = (subagentsModule as any).__test__;
+          const result = testApi.loadAgentSettingsFile();
+          assert.equal(result, null);
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("parses valid agents.json and returns correct overrides", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(
+            join(dir, "agents.json"),
+            JSON.stringify({ worker: { model: "openai/o3", thinking: "high" } })
+          );
+          const testApi = (subagentsModule as any).__test__;
+          const result = testApi.loadAgentSettingsFile();
+          assert.deepEqual({ ...result }, { worker: { model: "openai/o3", thinking: "high" } });
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("loadAgentSettingsFile returns null entry for agent name not in file", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), JSON.stringify({ worker: { model: "openai/o3" } }));
+          const testApi = (subagentsModule as any).__test__;
+          const result = testApi.loadAgentSettingsFile();
+          assert.equal(result?.["scout"] ?? null, null);
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("throws on invalid JSON", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), "not json");
+          const testApi = (subagentsModule as any).__test__;
+          assert.throws(
+            () => testApi.loadAgentSettingsFile(),
+            /Invalid JSON in agent settings/
+          );
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("throws on non-object root", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), JSON.stringify(["worker"]));
+          const testApi = (subagentsModule as any).__test__;
+          assert.throws(
+            () => testApi.loadAgentSettingsFile(),
+            /root must be an object/
+          );
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("throws on unknown keys in agent block", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), JSON.stringify({ worker: { modle: "openai/o3" } }));
+          const testApi = (subagentsModule as any).__test__;
+          assert.throws(
+            () => testApi.loadAgentSettingsFile(),
+            /unsupported key/
+          );
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("throws on non-string value in agent block", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), JSON.stringify({ worker: { model: 42 } }));
+          const testApi = (subagentsModule as any).__test__;
+          assert.throws(
+            () => testApi.loadAgentSettingsFile(),
+            /must be a string/
+          );
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("empty root object returns null for any agent", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), JSON.stringify({}));
+          const testApi = (subagentsModule as any).__test__;
+          const result = testApi.loadAgentSettingsFile();
+          assert.equal(result?.["worker"] ?? null, null);
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("loadAgentSettings (cached API) returns overrides for known agent", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(
+            join(dir, "agents.json"),
+            JSON.stringify({ worker: { model: "openai/o3", thinking: "high" } })
+          );
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+          assert.deepEqual(testApi.loadAgentSettings("worker"), { model: "openai/o3", thinking: "high" });
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+        }
+      });
+    });
+
+    it("loadAgentSettings (cached API) returns null for unknown agent", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), JSON.stringify({ worker: { model: "openai/o3" } }));
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+          assert.equal(testApi.loadAgentSettings("unknown-agent"), null);
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+        }
+      });
+    });
+
+    it("invalid-JSON error includes config path", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), "not json");
+          const testApi = (subagentsModule as any).__test__;
+          assert.throws(
+            () => testApi.loadAgentSettingsFile(),
+            (err: Error) => err.message.includes(join(dir, "agents.json"))
+          );
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("unsupported-key error includes the offending key name", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), JSON.stringify({ worker: { modle: "openai/o3" } }));
+          const testApi = (subagentsModule as any).__test__;
+          assert.throws(
+            () => testApi.loadAgentSettingsFile(),
+            (err: Error) => err.message.includes("modle")
+          );
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+        }
+      });
+    });
+
+    it("prototype-name 'toString' returns null when not configured (regression)", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), JSON.stringify({}));
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+          assert.equal(testApi.loadAgentSettings("toString"), null);
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+        }
+      });
+    });
+
+    it("prototype-name 'hasOwnProperty' returns null when not configured (regression)", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          writeFileSync(join(dir, "agents.json"), JSON.stringify({}));
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+          assert.equal(testApi.loadAgentSettings("hasOwnProperty"), null);
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+        }
+      });
+    });
+
+    it("'__proto__' entry does not corrupt cache prototype (regression)", () => {
+      withTempDir((dir) => {
+        process.env.PI_CODING_AGENT_DIR = dir;
+        try {
+          // Use JSON.stringify with replacer to emit a literal __proto__ key
+          const raw = '{"__proto__":{"model":"evil"},"worker":{"model":"openai/o3"}}';
+          writeFileSync(join(dir, "agents.json"), raw);
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+          // worker lookup still works
+          assert.deepEqual(testApi.loadAgentSettings("worker"), { model: "openai/o3" });
+          // __proto__ is not a configured agent but must not return something
+          // that would poison a regular object's prototype
+          const result = testApi.loadAgentSettings("__proto__");
+          // Either null (not configured because __proto__ is skipped by Object.entries)
+          // or a plain overrides object — never a native prototype object
+          if (result !== null) {
+            assert.equal(typeof result, "object");
+            assert.equal(Object.getPrototypeOf(result), Object.getPrototypeOf({}));
+          }
+        } finally {
+          delete process.env.PI_CODING_AGENT_DIR;
+          const testApi = (subagentsModule as any).__test__;
+          testApi.reloadAgentSettingsForTest();
+        }
+      });
+    });
+  });
+});
+
+describe("resolveEffectiveAgentParams merge logic", () => {
+  const testApi = (subagentsModule as any).__test__;
+
+  it("tool param thinking overrides frontmatter thinking", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      { thinking: "high" },
+      null,
+      { thinking: "minimal" },
+    );
+    assert.equal(result.thinking, "high");
+  });
+
+  it("settings thinking overrides frontmatter thinking when tool param absent", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      {},
+      { thinking: "medium" },
+      { thinking: "minimal" },
+    );
+    assert.equal(result.thinking, "medium");
+  });
+
+  it("full precedence: tool param > settings > frontmatter for thinking", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      { thinking: "high" },
+      { thinking: "medium" },
+      { thinking: "minimal" },
+    );
+    assert.equal(result.thinking, "high");
+  });
+
+  it("full precedence: tool param > settings > frontmatter for model", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      { model: "openai/o3" },
+      { model: "openai/gpt-4o" },
+      { model: "anthropic/claude-haiku" },
+    );
+    assert.equal(result.model, "openai/o3");
+  });
+
+  it("settings model fills gap when tool param absent", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      {},
+      { model: "openai/o3" },
+      { model: "anthropic/claude-haiku" },
+    );
+    assert.equal(result.model, "openai/o3");
+  });
+
+  it("full precedence: tool param > settings > frontmatter for tools", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      { tools: "read,bash" },
+      { tools: "read,bash,write" },
+      { tools: "read" },
+    );
+    assert.equal(result.tools, "read,bash");
+  });
+
+  it("full precedence: tool param > settings > frontmatter for skills", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      { skills: "commit" },
+      { skills: "commit,github" },
+      { skills: "github" },
+    );
+    assert.equal(result.skills, "commit");
+  });
+
+  it("settings fill all four fields when tool params absent", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      {},
+      { model: "openai/o3", thinking: "high", tools: "read,bash", skills: "commit" },
+      {},
+    );
+    assert.equal(result.model, "openai/o3");
+    assert.equal(result.thinking, "high");
+    assert.equal(result.tools, "read,bash");
+    assert.equal(result.skills, "commit");
+  });
+
+  it("frontmatter used when no tool params and no settings", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      {},
+      null,
+      { model: "anthropic/claude-haiku", thinking: "minimal" },
+    );
+    assert.equal(result.model, "anthropic/claude-haiku");
+    assert.equal(result.thinking, "minimal");
+  });
+
+  it("all undefined when no params, no settings, no frontmatter", () => {
+    const result = testApi.resolveEffectiveAgentParams({}, null, null);
+    assert.equal(result.model, undefined);
+    assert.equal(result.thinking, undefined);
+    assert.equal(result.tools, undefined);
+    assert.equal(result.skills, undefined);
+  });
+
+  it("partial settings override does not clear other fields from frontmatter", () => {
+    const result = testApi.resolveEffectiveAgentParams(
+      {},
+      { model: "openai/o3" },
+      { model: "anthropic/claude-haiku", thinking: "minimal", tools: "read", skills: "github" },
+    );
+    assert.equal(result.model, "openai/o3");
+    assert.equal(result.thinking, "minimal");
+    assert.equal(result.tools, "read");
+    assert.equal(result.skills, "github");
+  });
 });

@@ -1,0 +1,14 @@
+{
+  "worker": {
+    "model": "anthropic/claude-sonnet-4-6",
+    "thinking": "medium",
+    "tools": "read,bash,write,edit",
+    "skills": "commit,github"
+  },
+  "scout": {
+    "model": "anthropic/claude-haiku-4"
+  },
+  "planner": {
+    "thinking": "high"
+  }
+}
