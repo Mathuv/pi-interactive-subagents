@@ -971,6 +971,14 @@ function resolveEffectiveAgentParams(
   };
 }
 
+const DESTRUCTIVE_CONFIRM_DISABLE_ENV = "PI_DISABLE_DESTRUCTIVE_CONFIRM";
+
+function appendDestructiveConfirmEnv(envParts: string[]): void {
+  if (process.env[DESTRUCTIVE_CONFIRM_DISABLE_ENV] === "1") {
+    envParts.push(`${DESTRUCTIVE_CONFIRM_DISABLE_ENV}=1`);
+  }
+}
+
 export const __test__ = {
   borderLine,
   getShellReadyDelayMs,
@@ -994,6 +1002,7 @@ export const __test__ = {
   loadAgentSettings,
   reloadAgentSettingsForTest,
   resolveEffectiveAgentParams,
+  appendDestructiveConfirmEnv,
   runningSubagents,
 };
 
@@ -1207,6 +1216,8 @@ async function launchSubagent(
   } else if (process.env.PI_CODING_AGENT_DIR) {
     envParts.push(`PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`);
   }
+
+  appendDestructiveConfirmEnv(envParts);
 
   if (denySet.size > 0) {
     envParts.push(`PI_DENY_TOOLS=${shellEscape([...denySet].join(","))}`);
@@ -1907,6 +1918,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         if (process.env.PI_CODING_AGENT_DIR) {
           resumeEnvParts.push(`PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`);
         }
+
+        appendDestructiveConfirmEnv(resumeEnvParts);
+
         resumeEnvParts.push(`PI_SUBAGENT_NAME=${shellEscape(name)}`);
         resumeEnvParts.push(`PI_SUBAGENT_SESSION=${shellEscape(params.sessionPath)}`);
         resumeEnvParts.push(`PI_SUBAGENT_ID=${shellEscape(id)}`);

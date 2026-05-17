@@ -2555,3 +2555,46 @@ describe("resolveEffectiveAgentParams merge logic", () => {
     assert.equal(result.skills, "github");
   });
 });
+
+describe("destructive-confirm env propagation", () => {
+  const DISABLE_ENV = "PI_DISABLE_DESTRUCTIVE_CONFIRM";
+
+  it("does nothing when env is unset", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const prev = process.env[DISABLE_ENV];
+    delete process.env[DISABLE_ENV];
+    try {
+      const parts: string[] = [];
+      testApi.appendDestructiveConfirmEnv(parts);
+      assert.deepEqual(parts, []);
+    } finally {
+      restoreEnvVar(DISABLE_ENV, prev);
+    }
+  });
+
+  it("appends env var when set to '1'", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const prev = process.env[DISABLE_ENV];
+    process.env[DISABLE_ENV] = "1";
+    try {
+      const parts: string[] = [];
+      testApi.appendDestructiveConfirmEnv(parts);
+      assert.deepEqual(parts, [`${DISABLE_ENV}=1`]);
+    } finally {
+      restoreEnvVar(DISABLE_ENV, prev);
+    }
+  });
+
+  it("does nothing when env is set to non-'1' value", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const prev = process.env[DISABLE_ENV];
+    process.env[DISABLE_ENV] = "0";
+    try {
+      const parts: string[] = [];
+      testApi.appendDestructiveConfirmEnv(parts);
+      assert.deepEqual(parts, []);
+    } finally {
+      restoreEnvVar(DISABLE_ENV, prev);
+    }
+  });
+});

@@ -56,6 +56,12 @@ If your shell startup is slow and subagent commands sometimes get dropped before
 export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500
 ```
 
+Set `PI_DISABLE_DESTRUCTIVE_CONFIRM=1` in the parent process to propagate the destructive-confirm disabled state to all child subagents:
+
+```bash
+export PI_DISABLE_DESTRUCTIVE_CONFIRM=1
+```
+
 Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch commands target child surfaces by explicit ID, so focus and command delivery are independent. Note: the `interactive` option controls parent status notifications, not terminal focus.
 
 ## What's Included
