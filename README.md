@@ -6,7 +6,7 @@ https://github.com/user-attachments/assets/30adb156-cfb4-4c47-84ca-dd4aa80cba9f
 
 ## How It Works
 
-Call `subagent()` and it **returns immediately**. The sub-agent runs in its own terminal pane. A live widget above the input shows all running agents with their current state — `starting`, `active`, `waiting`, `stalled`, or `running`. When a sub-agent finishes, its result is **steered back** into the main session as an async notification — triggering a new turn so the agent can process it.
+Call `isubagent()` and it **returns immediately**. The sub-agent runs in its own terminal pane. A live widget above the input shows all running agents with their current state — `starting`, `active`, `waiting`, `stalled`, or `running`. When a sub-agent finishes, its result is **steered back** into the main session as an async notification — triggering a new turn so the agent can process it.
 
 ```
 ╭─ Subagents ──────────────────────────── 2 running ─╮
@@ -15,11 +15,11 @@ Call `subagent()` and it **returns immediately**. The sub-agent runs in its own 
 ╰────────────────────────────────────────────────────╯
 ```
 
-For parallel execution, just call `subagent` multiple times — they all run concurrently:
+For parallel execution, just call `isubagent` multiple times — they all run concurrently:
 
 ```typescript
-subagent({ name: "Scout: Auth", agent: "scout", task: "Analyze auth module" });
-subagent({ name: "Scout: DB", agent: "scout", task: "Map database schema" });
+isubagent({ name: "Scout: Auth", agent: "scout", task: "Analyze auth module" });
+isubagent({ name: "Scout: DB", agent: "scout", task: "Map database schema" });
 // Both return immediately, results steer back independently
 ```
 
@@ -66,10 +66,10 @@ Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch 
 
 | Tool                 | Description                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------- |
-| `subagent`           | Spawn a sub-agent in a dedicated multiplexer pane (async — returns immediately)             |
-| `subagent_interrupt` | Interrupt a running Pi-backed subagent's current turn                                       |
-| `subagents_list`     | List available agent definitions                                                            |
-| `subagent_resume`    | Resume a previous sub-agent session (async)                                                 |
+| `isubagent`          | Spawn a sub-agent in a dedicated multiplexer pane (async — returns immediately)             |
+| `isubagent_interrupt`| Interrupt a running Pi-backed subagent's current turn                                       |
+| `isubagents_list`    | List available agent definitions                                                            |
+| `isubagent_resume`   | Resume a previous sub-agent session (async)                                                 |
 
 | Command                    | Description                          |
 | -------------------------- | ------------------------------------ |
@@ -94,7 +94,7 @@ Agent discovery follows priority: **project-local** (`.pi/agents/`) > **global**
 ## Async Subagent Flow
 
 ```
-1. Agent calls subagent()          → returns immediately ("started")
+1. Agent calls isubagent()          → returns immediately ("started")
 2. Sub-agent runs in mux pane      → widget shows live status
 3. User keeps chatting             → main session fully interactive
 4. Sub-agent finishes              → result steered back as a normal completion/failure
@@ -151,16 +151,16 @@ cp config.json.example config.json
 
 ```typescript
 // Named agent with defaults from agent definition
-subagent({ name: "Scout", agent: "scout", task: "Analyze the codebase..." });
+isubagent({ name: "Scout", agent: "scout", task: "Analyze the codebase..." });
 
 // Force a full-context fork for this spawn
-subagent({ name: "Iterate", fork: true, task: "Fix the bug where..." });
+isubagent({ name: "Iterate", fork: true, task: "Fix the bug where..." });
 
 // Agent defaults can choose a different session-mode via frontmatter
-subagent({ name: "Planner", agent: "planner", task: "Work through the design with me" });
+isubagent({ name: "Planner", agent: "planner", task: "Work through the design with me" });
 
 // Custom working directory
-subagent({ name: "Designer", agent: "game-designer", cwd: "agents/game-designer", task: "..." });
+isubagent({ name: "Designer", agent: "game-designer", cwd: "agents/game-designer", task: "..." });
 ```
 
 ### Parameters
@@ -213,18 +213,18 @@ Top-level keys are agent names. Each agent block accepts these optional fields:
 
 **Override precedence:** tool params > `agents.json` > agent `.md` frontmatter.
 
-Unused entries in `agents.json` cause no errors. However, an explicit `subagent({ agent: "foo" })` call will still pick up any `agents.json.foo` overrides even if no `foo.md` definition file exists — `.md` files are only required for discovery surfaces like `subagents_list`. Invalid JSON or unknown keys in an agent block raise a clear error. Copy `agents.json.example` in the repo root to get started.
+Unused entries in `agents.json` cause no errors. However, an explicit `isubagent({ agent: "foo" })` call will still pick up any `agents.json.foo` overrides even if no `foo.md` definition file exists — `.md` files are only required for discovery surfaces like `isubagents_list`. Invalid JSON or unknown keys in an agent block raise a clear error. Copy `agents.json.example` in the repo root to get started.
 
 ---
 
 ## Interrupting a running subagent
 
-Use `subagent_interrupt` to cancel the active turn of a running Pi-backed subagent:
+Use `isubagent_interrupt` to cancel the active turn of a running Pi-backed subagent:
 
 ```typescript
-subagent_interrupt({ id: "abcd1234" });
+isubagent_interrupt({ id: "abcd1234" });
 // or
-subagent_interrupt({ name: "Scout" });
+isubagent_interrupt({ name: "Scout" });
 ```
 
 This sends Escape to the child pane, cancelling the in-progress model turn. The subagent session stays alive — the pane, session file, and background polling all remain intact. After the interrupt, the widget immediately moves the child back to `waiting`, and stale pre-interrupt snapshots are ignored. If the child starts work later, newer snapshots return it to `active`; completion, failure, and `caller_ping` still flow through normally.
@@ -237,12 +237,12 @@ This is a turn-level interrupt, not a method for forcibly terminating a subagent
 
 ## caller_ping — Child-to-Parent Help Request
 
-The `caller_ping` tool lets a subagent request help from its parent agent. When called, the child session **exits** and the parent receives a notification with the help message. The parent can then **resume** the child session with a response using `subagent_resume`.
+The `caller_ping` tool lets a subagent request help from its parent agent. When called, the child session **exits** and the parent receives a notification with the help message. The parent can then **resume** the child session with a response using `isubagent_resume`.
 
 **`caller_ping` parameters:**
 - `message` (required): What you need help with
 
-**`subagent_resume` parameters:**
+**`isubagent_resume` parameters:**
 - `sessionPath` (required): Path to the child session `.jsonl` file
 - `name` (optional): Display name for the resumed pane (defaults to `Resume`)
 - `message` (optional): Follow-up prompt to send after resuming
@@ -252,7 +252,7 @@ The `caller_ping` tool lets a subagent request help from its parent agent. When 
 1. Child calls `caller_ping({ message: "Not sure which schema to use" })`
 2. Child session exits (like `subagent_done`)
 3. Parent receives a steer notification: *"Sub-agent Worker needs help: Not sure which schema to use"*
-4. Parent resumes the child session via `subagent_resume` with the response
+4. Parent resumes the child session via `isubagent_resume` with the response
 5. Child picks up where it left off with the parent's guidance
 
 **Example:**
@@ -331,7 +331,7 @@ You are a specialized agent that does X...
 | Field         | Type    | Description                                                                                                                                                                                                                                                                 |
 | ------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `name`        | string  | Agent name (used in `agent: "my-agent"`)                                                                                                                                                                                                                                    |
-| `description` | string  | Shown in `subagents_list` output                                                                                                                                                                                                                                            |
+| `description` | string  | Shown in `isubagents_list` output                                                                                                                                                                                                                                            |
 | `model`       | string  | Default model (e.g. `anthropic/claude-sonnet-4-6`)                                                                                                                                                                                                                          |
 | `thinking`    | string  | Thinking level string passed through to Pi/provider (e.g. `minimal`, `medium`, `high`)                                                                                                                                                                                                                                 |
 | `tools`       | string  | Comma-separated **native pi tools only**: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`                                                                                                                                                                             |
@@ -342,11 +342,11 @@ You are a specialized agent that does X...
 | `auto-exit`   | boolean | Auto-shutdown when the agent finishes its turn — no `subagent_done` call needed. If the user sends any input, auto-exit is permanently disabled and the user takes over the session. Recommended for autonomous agents (scout, worker); not for interactive ones (planner). Also determines the default value of `interactive` (see below). |
 | `interactive` | boolean | derived        | Override whether stall/recovery transitions wake the parent session. Defaults to the inverse of `auto-exit`: autonomous agents (`auto-exit: true`) are non-interactive and get stall pings; agents without `auto-exit` are interactive and stay quiet. Explicit values take precedence. |
 | `cwd`         | string  | Default working directory (absolute or relative to project root)                                                                                                                                                                                                            |
-| `disable-model-invocation` | boolean | Hide this agent from discovery surfaces like `subagents_list`. The agent still remains directly invokable by explicit name via `subagent({ agent: "name", ... })`. |
+| `disable-model-invocation` | boolean | Hide this agent from discovery surfaces like `isubagents_list`. The agent still remains directly invokable by explicit name via `isubagent({ agent: "name", ... })`. |
 
 ---
 
-Discovery still resolves precedence before visibility filtering. If a project-local hidden agent has the same name as a visible global or bundled agent, the hidden project agent wins and the lower-precedence agent does not appear in `subagents_list`.
+Discovery still resolves precedence before visibility filtering. If a project-local hidden agent has the same name as a visible global or bundled agent, the hidden project agent wins and the lower-precedence agent does not appear in `isubagents_list`.
 
 ### `session-mode`
 
@@ -412,7 +412,7 @@ name: planner
 Or per spawn:
 
 ```typescript
-subagent({ name: "Scout", agent: "scout", interactive: true, task: "..." });
+isubagent({ name: "Scout", agent: "scout", interactive: true, task: "..." });
 ```
 
 ---
@@ -423,7 +423,7 @@ By default, every sub-agent can spawn further sub-agents. Control this with fron
 
 ### `spawning: false`
 
-Denies all subagent lifecycle tools (`subagent`, `subagent_interrupt`, `subagents_list`, `subagent_resume`):
+Denies all subagent lifecycle tools (`isubagent`, `isubagent_interrupt`, `isubagents_list`, `isubagent_resume`):
 
 ```yaml
 ---
@@ -439,7 +439,7 @@ Fine-grained control over individual extension tools:
 ```yaml
 ---
 name: focused-agent
-deny-tools: subagent
+deny-tools: isubagent
 ---
 ```
 
@@ -472,8 +472,8 @@ project/
 ```
 
 ```typescript
-subagent({ name: "Game Designer", cwd: "agents/game-designer", task: "Design the combat system" });
-subagent({ name: "SRE", cwd: "agents/sre", task: "Review deployment pipeline" });
+isubagent({ name: "Game Designer", cwd: "agents/game-designer", task: "Design the combat system" });
+isubagent({ name: "SRE", cwd: "agents/sre", task: "Review deployment pipeline" });
 ```
 
 Set a default `cwd` in agent frontmatter:
@@ -496,7 +496,7 @@ Every sub-agent session displays a compact tools widget showing available and de
 [scout] — 12 tools · 4 denied  (Ctrl+J)              ← collapsed
 [scout] — 12 available  (Ctrl+J to collapse)          ← expanded
   read, bash, edit, write, todo, ...
-  denied: subagent, subagents_list, ...
+  denied: isubagent, isubagents_list, ...
 ```
 
 ---

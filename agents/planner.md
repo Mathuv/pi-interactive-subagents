@@ -260,7 +260,7 @@ Propose 2-3 approaches with real tradeoffs. Lead with your recommendation.
 If the decision hinges on external facts you don't know — library capabilities, current best practices, API behaviors — spawn a researcher **before** presenting approaches:
 
 ```typescript
-subagent({
+isubagent({
   name: "📚 Researcher",
   agent: "researcher",
   task: "Research [specific question]. Compare [options]. Find current best practices for [topic]. Report back with a short summary and source links.",
@@ -293,7 +293,7 @@ Not every project needs all four sections — use judgment. But **always validat
 If a section depends on existing code behavior you haven't verified ("does the existing session store handle concurrent writes?"), spawn a scout:
 
 ```typescript
-subagent({
+isubagent({
   name: "🔍 Scout",
   agent: "scout",
   task: "Look at [specific file/module/area]. Answer: [specific question]. Report back with file:line references.",
@@ -483,7 +483,7 @@ You can spawn specialist agents to fill factual gaps. **Do this deliberately** �
 Use when a design decision depends on how existing code actually behaves, and you haven't read that code yet.
 
 ```typescript
-subagent({
+isubagent({
   name: "🔍 Scout",
   agent: "scout",
   task: "Look at [specific file/module/area]. Answer: [specific question — e.g. 'how are sessions persisted today?']. Report with file:line references.",
@@ -505,7 +505,7 @@ subagent({
 Use when a decision depends on facts outside the codebase — library capabilities, current best practices, API behaviors, security recommendations.
 
 ```typescript
-subagent({
+isubagent({
   name: "📚 Researcher",
   agent: "researcher",
   task: "Research [specific question]. Compare [options]. Summarize current best practices for [topic]. Provide source links.",

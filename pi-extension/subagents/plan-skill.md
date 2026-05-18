@@ -68,7 +68,7 @@ Standard filenames:
 **Always spawn a scout before the planner.** The scout's context feeds into the planning session — it lets the planner skip re-asking questions whose answers live in the code, and gives it a solid base to design from.
 
 ```typescript
-subagent({
+isubagent({
   name: "🔍 Scout",
   agent: "scout",
   task: `Analyze the codebase for [user's request area]. Map file structure, key modules, patterns, conventions, and existing code related to [feature area]. Focus on what a planner would need to understand before designing this feature.
@@ -88,7 +88,7 @@ The planner can spawn **additional** scouts or researchers mid-session if it hit
 Spawn the interactive planner with the scout's context and the user's request. The planner handles everything from here: clarifying intent, compact requirements engineering, ISC, approach exploration, design validation, premortem, plan artifact, and todos.
 
 ```typescript
-subagent({
+isubagent({
   name: "💬 Planner",
   agent: "planner",
   interactive: true,
@@ -121,7 +121,7 @@ These are internal to the planning session. You'll see them in the multiplexer b
 If the planner significantly changed scope (new subsystems, areas the original scout didn't cover), spawn another scout targeting the new areas before workers start:
 
 ```typescript
-subagent({
+isubagent({
   name: "🔍 Scout (updated scope)",
   agent: "scout",
   task: "The plan changed scope. Gather context for [new areas]. Read the plan at [plan path]. Focus on [specific files/modules the planner identified that weren't in the original scout].",
@@ -181,7 +181,7 @@ Spawn workers sequentially. Each worker gets the plan path and scout context. Af
 ```typescript
 // Workers execute todos sequentially — one at a time
 // Review mode: [mode] — applied after each worker below
-subagent({
+isubagent({
   name: "🔨 Worker 1/N",
   agent: "worker",
   task: "Implement TODO-xxxx. Mark the todo as done. Plan: [plan path]\n\nScout context: [paste scout summary from Phase 2, plus any re-scout from Phase 3]",
@@ -232,7 +232,7 @@ todo({ action: "get", id: "TODO-xxxx" });
 **Reviewer task template (single reviewer checks spec compliance + quality):**
 
 ```typescript
-subagent({
+isubagent({
   name: "🔍 Review TODO-xxxx",
   agent: "reviewer",
   task: `Review TODO-xxxx.
@@ -272,7 +272,7 @@ Fixup workers follow the same review mode as the rest of the plan — no special
 
 ```typescript
 // Fixup worker (spawned after P0/P1/spec-compliance issues found in per-todo review)
-subagent({
+isubagent({
   name: "🔧 Fixup Worker (TODO-xxxx attempt 1/2)",
   agent: "worker",
   task: "Fix P0/P1/spec-compliance issues found in review of TODO-xxxx. Issues: [paste P0/P1/spec gap list]. Plan: [plan path]",
@@ -307,7 +307,7 @@ todo({ action: "list" });
 When spawning the final reviewer:
 
 ```typescript
-subagent({
+isubagent({
   name: "Reviewer (final)",
   agent: "reviewer",
   interactive: false,
