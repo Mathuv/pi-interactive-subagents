@@ -1127,8 +1127,8 @@ describe("subagent discovery", () => {
       const { api, registeredTools } = createMockExtensionApi();
       (subagentsModule as any).default(api);
 
-      const tool = registeredTools.find((tool) => tool.name === "subagents_list");
-      assert.ok(tool, "expected subagents_list to be registered");
+      const tool = registeredTools.find((tool) => tool.name === "isubagents_list");
+      assert.ok(tool, "expected isubagents_list to be registered");
 
       const result = await tool.execute();
       const agents = result.details?.agents ?? [];
@@ -1155,8 +1155,8 @@ describe("subagent discovery", () => {
       const { api, registeredTools } = createMockExtensionApi();
       (subagentsModule as any).default(api);
 
-      const tool = registeredTools.find((tool) => tool.name === "subagents_list");
-      assert.ok(tool, "expected subagents_list to be registered");
+      const tool = registeredTools.find((tool) => tool.name === "isubagents_list");
+      assert.ok(tool, "expected isubagents_list to be registered");
 
       const result = await tool.execute();
       const agents = result.details?.agents ?? [];
@@ -1199,8 +1199,8 @@ describe("subagent discovery", () => {
       const { api, registeredTools } = createMockExtensionApi();
       (subagentsModule as any).default(api);
 
-      const tool = registeredTools.find((tool) => tool.name === "subagents_list");
-      assert.ok(tool, "expected subagents_list to be registered");
+      const tool = registeredTools.find((tool) => tool.name === "isubagents_list");
+      assert.ok(tool, "expected isubagents_list to be registered");
 
       const result = await tool.execute();
       const agents = result.details?.agents ?? [];
@@ -1343,7 +1343,7 @@ describe("cmux.ts interpretExitSidecar", () => {
   });
 });
 describe("commands", () => {
-  it("/iterate always emits a full-context fork tool call", () => {
+  it("/iterate always emits a full-context fork tool call with isubagent", () => {
     const { api, registeredCommands, sentUserMessages } = createMockExtensionApi();
 
     (subagentsModule as any).default(api);
@@ -1356,6 +1356,25 @@ describe("commands", () => {
     assert.equal(sentUserMessages.length, 1);
     assert.match(sentUserMessages[0], /fork: true/);
     assert.match(sentUserMessages[0], /name: "Iterate"/);
+    assert.match(sentUserMessages[0], /Use isubagent/);
+    assert.doesNotMatch(sentUserMessages[0], /Use subagent[^_]/);
+  });
+
+  it("/subagent command sends user message with isubagent tool call", () => {
+    const { api, registeredCommands, sentUserMessages } = createMockExtensionApi();
+
+    (subagentsModule as any).default(api);
+
+    const subagentCmd = registeredCommands.find((command) => command.name === "subagent");
+    assert.ok(subagentCmd, "expected /subagent command to be registered");
+
+    subagentCmd.handler("worker fix the bug", {});
+
+    assert.equal(sentUserMessages.length, 1);
+    assert.match(sentUserMessages[0], /Use isubagent/);
+    assert.match(sentUserMessages[0], /agent: "worker"/);
+    assert.match(sentUserMessages[0], /name: "Worker"/);
+    assert.doesNotMatch(sentUserMessages[0], /Use subagent[^_]/);
   });
 });
 
@@ -1373,21 +1392,41 @@ describe("tool registration", () => {
     });
   });
 
-  it("expands spawning false to deny subagent interruption", () => {
+  it("expands spawning false to deny isubagent interruption", () => {
     const testApi = (subagentsModule as any).__test__;
     const denied = testApi.resolveDenyTools({ spawning: false });
 
-    assert.equal(denied.has("subagent"), true);
-    assert.equal(denied.has("subagent_interrupt"), true);
-    assert.equal(denied.has("subagent_resume"), true);
+    assert.equal(denied.has("isubagent"), true);
+    assert.equal(denied.has("isubagent_interrupt"), true);
+    assert.equal(denied.has("isubagents_list"), true);
+    assert.equal(denied.has("isubagent_resume"), true);
+    assert.equal(denied.has("subagent"), false);
+    assert.equal(denied.has("subagent_interrupt"), false);
+    assert.equal(denied.has("subagents_list"), false);
+    assert.equal(denied.has("subagent_resume"), false);
+  });
+
+  it("registers isubagent, isubagent_interrupt, isubagents_list, isubagent_resume", () => {
+    const { api, registeredTools } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+
+    const names = registeredTools.map((t) => t.name);
+    assert.ok(names.includes("isubagent"), "expected isubagent tool");
+    assert.ok(names.includes("isubagent_interrupt"), "expected isubagent_interrupt tool");
+    assert.ok(names.includes("isubagents_list"), "expected isubagents_list tool");
+    assert.ok(names.includes("isubagent_resume"), "expected isubagent_resume tool");
+    assert.equal(names.includes("subagent"), false, "old subagent name must NOT be registered");
+    assert.equal(names.includes("subagent_interrupt"), false, "old subagent_interrupt name must NOT be registered");
+    assert.equal(names.includes("subagents_list"), false, "old subagents_list name must NOT be registered");
+    assert.equal(names.includes("subagent_resume"), false, "old subagent_resume name must NOT be registered");
   });
 
   it("renders partial subagent tool-call args without throwing", () => {
     const { api, registeredTools } = createMockExtensionApi();
     (subagentsModule as any).default(api);
 
-    const subagentTool = registeredTools.find((tool) => tool.name === "subagent");
-    assert.ok(subagentTool, "expected subagent tool to be registered");
+    const subagentTool = registeredTools.find((tool) => tool.name === "isubagent");
+    assert.ok(subagentTool, "expected isubagent tool to be registered");
 
     const theme = {
       fg(_color: string, text: string) {
@@ -1407,8 +1446,8 @@ describe("tool registration", () => {
     const { api, registeredTools } = createMockExtensionApi();
     (subagentsModule as any).default(api);
 
-    const resumeTool = registeredTools.find((tool) => tool.name === "subagent_resume");
-    assert.ok(resumeTool, "expected subagent_resume tool to be registered");
+    const resumeTool = registeredTools.find((tool) => tool.name === "isubagent_resume");
+    assert.ok(resumeTool, "expected isubagent_resume tool to be registered");
 
     const autoExitSchema = resumeTool.parameters.properties.autoExit;
     assert.equal(autoExitSchema.type, "boolean");
@@ -1603,12 +1642,12 @@ describe("subagent interruption", () => {
     };
   }
 
-  it("registers subagent_interrupt in the main session extension", () => {
+  it("registers isubagent_interrupt in the main session extension", () => {
     const { api, registeredTools } = createMockExtensionApi();
 
     (subagentsModule as any).default(api);
 
-    assert.equal(registeredTools.some((tool) => tool.name === "subagent_interrupt"), true);
+    assert.equal(registeredTools.some((tool) => tool.name === "isubagent_interrupt"), true);
   });
 
   it("resolves interrupt targets by exact id and reports name ambiguity", () => {
@@ -1884,7 +1923,7 @@ describe("subagent interruption", () => {
     assert.match(presentation, /Sub-agent "Worker" failed/);
     assert.match(presentation, /provider\/agent error — auto-retry exhausted/);
     assert.match(presentation, /Error: Anthropic 529 Overloaded after 3 retries/);
-    assert.match(presentation, /subagent_resume/);
+    assert.match(presentation, /isubagent_resume/);
     assert.match(presentation, /Resume: pi --session/);
     assert.doesNotMatch(presentation, /ignored when errorMessage is present/);
   });
