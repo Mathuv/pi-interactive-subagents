@@ -171,6 +171,19 @@ Remember both modes — they govern behavior in Phase 5 and Phase 6.
 
 ---
 
+## Parent Help Pings
+
+All spawned Pi subagents have `caller_ping`. Treat a ping as a help request, not a normal completion or worker failure:
+
+1. Read the ping message and session path from the steer notification.
+2. If you can answer from existing plan/scout/todo context, resume the child with `isubagent_resume({ sessionPath, message: "..." })`.
+3. If the parent decision requires the user, ask the user, then resume the child with the answer.
+4. Do not run review gates for a pinged worker until the worker is resumed and completes normally.
+
+Use this especially when a worker/scout/reviewer cannot find something the parent specified, hits conflicting instructions or repository state, needs a parent choice between viable options, or is blocked by indecision after investigating.
+
+---
+
 ## Phase 5: Execute Todos
 
 > **Review mode:** [echo the mode chosen in Phase 4 here, e.g. `full` / `ask-me` / `final-only` / `none`]
@@ -187,7 +200,11 @@ isubagent({
   task: "Implement TODO-xxxx. Mark the todo as done. Plan: [plan path]\n\nScout context: [paste scout summary from Phase 2, plus any re-scout from Phase 3]",
 });
 
-// After worker finishes — check for failure first:
+// After worker finishes — check for ping/failure first:
+// If the worker called caller_ping:
+//   → Do NOT run the review gate yet
+//   → Answer the help request yourself or ask the user
+//   → Resume the child with isubagent_resume({ sessionPath, message })
 // If the worker crashed or exited non-zero:
 //   → Do NOT run the review gate
 //   → Surface the error to the user
@@ -355,4 +372,5 @@ Before reporting done:
 4. ✅ Every todo has a polished commit (using the `commit` skill)?
 5. ✅ Spec-compliance + quality reviews completed per chosen mode? (`full` → per-todo + final ran; `final-only` → final ran; `ask-me` → user was prompted at each gate; `none` → skipped intentionally)
 6. ✅ TDD mode followed per chosen setting? (`on` → all workers got TDD instructions; `smart` → applicable todos got TDD instructions; `off` → no TDD language injected)
-7. ✅ Review findings and spec gaps triaged and addressed (if any reviews ran)?
+7. ✅ No unresolved `caller_ping` help requests remain?
+8. ✅ Review findings and spec gaps triaged and addressed (if any reviews ran)?

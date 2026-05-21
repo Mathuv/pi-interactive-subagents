@@ -271,7 +271,8 @@ export default function (pi: ExtensionAPI) {
     description:
       "Send a help request to the parent agent and exit this session. " +
       "The parent will be notified with your message and can resume this session with a response. " +
-      "Use when you're stuck, need clarification, or need the parent to take action.",
+      "Use when you're stuck, cannot find something the parent specified, hit conflicting instructions, " +
+      "need the parent to choose between viable options, or need parent action before proceeding.",
     parameters: Type.Object({
       message: Type.String({ description: "What you need help with" }),
     }),

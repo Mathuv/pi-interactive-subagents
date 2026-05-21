@@ -242,6 +242,15 @@ The `caller_ping` tool lets a subagent request help from its parent agent. When 
 **`caller_ping` parameters:**
 - `message` (required): What you need help with
 
+Subagents should call `caller_ping` instead of guessing or exiting with a normal report when they need parent/orchestrator help to proceed, including:
+- They cannot find something the parent specified
+- Task instructions conflict with repository state or each other
+- Required context/artifacts are missing
+- Multiple viable options need a parent decision
+- They are blocked by indecision after investigating
+
+The message should include what the child tried, why it is blocked, the options if any, and its recommendation if it has one.
+
 **`isubagent_resume` parameters:**
 - `sessionPath` (required): Path to the child session `.jsonl` file
 - `name` (optional): Display name for the resumed pane (defaults to `Resume`)

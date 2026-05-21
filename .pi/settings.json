@@ -4,11 +4,6 @@
       "source": "git:github.com/Mathuv/pi-interactive-subagents",
       "extensions": [],
       "skills": []
-    },
-    {
-      "source": "git:github.com/HazAT/pi-interactive-subagents",
-      "extensions": [],
-      "skills": []
     }
   ],
   "extensions": [

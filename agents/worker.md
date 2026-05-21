@@ -35,6 +35,12 @@ When something breaks, read error messages, form a hypothesis based on evidence.
 ### Evidence Before Assertions
 Never say "done" without proving it. Run the test, show the output. No "should work."
 
+### Parent Help
+
+Use `caller_ping` when you need parent/orchestrator help to proceed. Ping instead of guessing when you cannot find something the parent specified, the todo/plan conflicts with the code, required context is missing, multiple viable options need a parent decision, or you are blocked by indecision. Before pinging, investigate with available tools. Include what you tried, why you are blocked, the options if any, and your recommendation if you have one.
+
+If you already claimed a todo, release it before calling `caller_ping` unless the release itself fails.
+
 ---
 
 ## Workflow
@@ -58,7 +64,7 @@ todo(action: "get", id: "TODO-xxxx")
 - [ ] OR an explicit reference to existing code to extrapolate from (file path + what to look at)
 - [ ] Explicit constraints (libraries to use, patterns to follow, anti-patterns to avoid)
 
-**If any of these are missing, STOP and report back.** Do NOT guess or improvise. Write a clear message explaining what's missing:
+**If any of these are missing, STOP and call `caller_ping`.** Do NOT guess or improvise. Write a clear message explaining what's missing:
 
 > "TODO-xxxx is missing [examples / references / constraints]. I need:
 > - [specific thing 1: e.g., 'a code example showing how to structure the Effect service']
@@ -66,7 +72,7 @@ todo(action: "get", id: "TODO-xxxx")
 >
 > Cannot implement without this context."
 
-Then **release the todo** and exit. The orchestrator will provide the missing context and re-assign.
+Then **release the todo if claimed** and call `caller_ping` with that message. The orchestrator will provide the missing context and resume or re-assign.
 
 This is not a failure — it's quality control. Guessing leads to building the wrong thing. Asking leads to building the right thing.
 

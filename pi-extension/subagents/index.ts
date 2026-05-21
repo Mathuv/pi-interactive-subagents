@@ -665,6 +665,10 @@ function updateWidget() {
  */
 const SUBAGENT_CONTROL_TOOLS = ["caller_ping", "subagent_done"] as const;
 
+const PARENT_HELP_PROTOCOL = `Parent help protocol:
+The caller_ping tool is available in subagent contexts. Use caller_ping when you need help from the parent/orchestrator instead of guessing, choosing arbitrarily, or exiting with a normal report. Call it when you cannot find something the parent specified, encounter conflicting instructions or code state, need the parent to choose between viable options, are blocked by missing context, or are otherwise undecided on a blocking decision.
+Before pinging, investigate with the tools you have. Do not ping for facts you can verify yourself or for minor non-blocking uncertainty. In the caller_ping message, include what you tried, why you are blocked, the options if any, and your recommendation if you have one.`;
+
 /**
  * Build the child --tools allowlist.
  *
@@ -1106,7 +1110,7 @@ async function launchSubagent(
   const roleBlock = identity && !identityInSystemPrompt ? `\n\n${identity}` : "";
   const fullTask = inheritsConversationContext
     ? params.task
-    : `${roleBlock}\n\n${modeHint}\n\n${params.task}\n\n${summaryInstruction}`;
+    : `${roleBlock}\n\n${modeHint}\n\n${PARENT_HELP_PROTOCOL}\n\n${params.task}\n\n${summaryInstruction}`;
   // ── Claude Code CLI path ──
   if (agentDefs?.cli === "claude") {
     const sentinelFile = `/tmp/pi-claude-${id}-done`;
