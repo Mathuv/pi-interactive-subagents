@@ -1,5 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { keyHint } from "@mariozechner/pi-coding-agent";
+import {
+  keyHint,
+  stripFrontmatter,
+  type Skill,
+} from "@mariozechner/pi-coding-agent";
 import { Type, type Static } from "@sinclair/typebox";
 import { Box, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { dirname, join } from "node:path";
@@ -689,17 +693,49 @@ function buildSubagentToolAllowlist(effectiveTools?: string): string | null {
   return [...allow].join(",");
 }
 
+function parseEffectiveSkills(effectiveSkills?: string): string[] {
+  return (effectiveSkills ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function formatSkillPromptBlock(
+  skillName: string,
+  availableSkills: Map<string, Skill>,
+  readFile: typeof readFileSync = readFileSync,
+): string {
+  const skill = availableSkills.get(skillName);
+  if (!skill) return `/skill:${skillName}`;
+
+  try {
+    const body = stripFrontmatter(readFile(skill.filePath, "utf8")).trim();
+    return `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+  } catch {
+    return `/skill:${skillName}`;
+  }
+}
+
+function buildCombinedBootstrapPrompt(params: {
+  effectiveSkills?: string;
+  task: string;
+  availableSkills: Skill[];
+  readFile?: typeof readFileSync;
+}): string {
+  const availableSkills = new Map(params.availableSkills.map((skill) => [skill.name, skill]));
+  const blocks = parseEffectiveSkills(params.effectiveSkills).map((name) =>
+    formatSkillPromptBlock(name, availableSkills, params.readFile ?? readFileSync),
+  );
+
+  return [...blocks, params.task].join("\n\n");
+}
+
 function buildPiPromptArgs(params: {
   effectiveSkills?: string;
   taskDelivery: "direct" | "artifact";
   taskArg: string;
 }): string[] {
-  const skillPrompts = (params.effectiveSkills ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((skill) => `/skill:${skill}`);
-
+  const skillPrompts = parseEffectiveSkills(params.effectiveSkills).map((skill) => `/skill:${skill}`);
   const needsSeparator = params.taskDelivery === "artifact" && skillPrompts.length > 0;
 
   return [
@@ -1001,6 +1037,8 @@ export const __test__ = {
   resolveEffectiveInteractive,
   buildSubagentToolAllowlist,
   buildPiPromptArgs,
+  parseEffectiveSkills,
+  buildCombinedBootstrapPrompt,
   formatWidgetRightLabel,
   observeRunningSubagent,
   resolveDenyTools,
