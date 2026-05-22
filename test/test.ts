@@ -49,10 +49,11 @@ import {
   getSubagentActivityFile,
   readSubagentActivityFile,
 } from "../pi-extension/subagents/activity.ts";
-import {
+import subagentDoneInit, {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
   findLatestAssistantError,
+  PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE,
 } from "../pi-extension/subagents/subagent-done.ts";
 import { __pollForExitTest__ } from "../pi-extension/subagents/cmux.ts";
 
@@ -1290,6 +1291,84 @@ describe("subagent-done.ts", () => {
     it("returns null when messages is undefined or empty", () => {
       assert.equal(findLatestAssistantError(undefined), null);
       assert.equal(findLatestAssistantError([]), null);
+    });
+  });
+
+  describe("bootstrap command", () => {
+    function createApi() {
+      const mock = createMockExtensionApi();
+      subagentDoneInit(mock.api);
+      return mock;
+    }
+
+    it("registers __subagent_bootstrap command", () => {
+      const { registeredCommands } = createApi();
+      const cmd = registeredCommands.find((c: any) => c.name === "__subagent_bootstrap");
+      assert.ok(cmd, "expected __subagent_bootstrap command to be registered");
+    });
+
+    it("reads PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE and sends content as user message", () => {
+      const { registeredCommands, sentUserMessages } = createApi();
+      const cmd = registeredCommands.find((c: any) => c.name === "__subagent_bootstrap");
+
+      const dir = createTestDir();
+      try {
+        const promptFile = join(dir, "combined-bootstrap.md");
+        const promptContent = "<skill name=\"karpathy-guidelines\">\nstuff\n</skill>\n\nDo the task.";
+        writeFileSync(promptFile, promptContent);
+
+        const originalEnv = process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE];
+        process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE] = promptFile;
+        try {
+          cmd.handler("", {});
+        } finally {
+          restoreEnvVar(PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE, originalEnv);
+        }
+
+        assert.equal(sentUserMessages.length, 1);
+        assert.equal(sentUserMessages[0], promptContent);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("throws error naming PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE when env var is missing", () => {
+      const { registeredCommands } = createApi();
+      const cmd = registeredCommands.find((c: any) => c.name === "__subagent_bootstrap");
+
+      const originalEnv = process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE];
+      delete process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE];
+      try {
+        assert.throws(
+          () => cmd.handler("", {}),
+          /PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE/,
+        );
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE] = originalEnv;
+        }
+      }
+    });
+
+    it("throws a clear bootstrap error when prompt file cannot be read", () => {
+      const { registeredCommands } = createApi();
+      const cmd = registeredCommands.find((c: any) => c.name === "__subagent_bootstrap");
+
+      const originalEnv = process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE];
+      process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE] = "/nonexistent/path.md";
+      try {
+        assert.throws(
+          () => cmd.handler("", {}),
+          (error: any) => {
+            assert.match(error.message, /__subagent_bootstrap/);
+            assert.match(error.message, /PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE/);
+            assert.match(error.message, /\/nonexistent\/path\.md/);
+            return true;
+          },
+        );
+      } finally {
+        restoreEnvVar(PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE, originalEnv);
+      }
     });
   });
 });
