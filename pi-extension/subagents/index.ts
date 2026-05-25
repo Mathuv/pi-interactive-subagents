@@ -1,5 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { keyHint } from "@mariozechner/pi-coding-agent";
+import {
+  keyHint,
+  loadSkills,
+  stripFrontmatter,
+  type Skill,
+} from "@mariozechner/pi-coding-agent";
 import { Type, type Static } from "@sinclair/typebox";
 import { Box, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { dirname, join } from "node:path";
@@ -53,6 +58,7 @@ import {
   type ActivityReadResult,
   type SubagentActivityState,
 } from "./activity.ts";
+import { PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE } from "./subagent-done.ts";
 
 /** Absolute path to `pi-extension/subagents`. https://github.com/nodejs/node/issues/37845 */
 const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -689,24 +695,100 @@ function buildSubagentToolAllowlist(effectiveTools?: string): string | null {
   return [...allow].join(",");
 }
 
+function parseEffectiveSkills(effectiveSkills?: string): string[] {
+  return (effectiveSkills ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function formatSkillPromptBlock(
+  skillName: string,
+  availableSkills: Map<string, Skill>,
+  readFile: typeof readFileSync = readFileSync,
+): string {
+  const skill = availableSkills.get(skillName);
+  if (!skill) return `/skill:${skillName}`;
+
+  try {
+    const body = stripFrontmatter(readFile(skill.filePath, "utf8")).trim();
+    return `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+  } catch {
+    return `/skill:${skillName}`;
+  }
+}
+
+function buildCombinedBootstrapPrompt(params: {
+  effectiveSkills?: string;
+  task: string;
+  availableSkills: Skill[];
+  readFile?: typeof readFileSync;
+}): string {
+  const availableSkills = new Map(params.availableSkills.map((skill) => [skill.name, skill]));
+  const blocks = parseEffectiveSkills(params.effectiveSkills).map((name) =>
+    formatSkillPromptBlock(name, availableSkills, params.readFile ?? readFileSync),
+  );
+
+  return [...blocks, params.task].join("\n\n");
+}
+
+function shouldWriteBootstrapArtifact(taskDelivery: string, effectiveSkills?: string): boolean {
+  return taskDelivery === "artifact" && parseEffectiveSkills(effectiveSkills).length > 0;
+}
+
+function buildBootstrapPromptEnvParts(params: {
+  taskDelivery: "direct" | "artifact";
+  effectiveSkills?: string;
+  task: string;
+  bootstrapArtifactPath: string;
+  cwd: string;
+  agentDir: string;
+  loadAvailableSkills?: (params: { cwd: string; agentDir: string }) => Skill[];
+  readFile?: typeof readFileSync;
+  writeFile?: (path: string, content: string, encoding: BufferEncoding) => void;
+}): string[] {
+  if (!shouldWriteBootstrapArtifact(params.taskDelivery, params.effectiveSkills)) return [];
+
+  const availableSkills = params.loadAvailableSkills
+    ? params.loadAvailableSkills({ cwd: params.cwd, agentDir: params.agentDir })
+    : loadSkills({
+      cwd: params.cwd,
+      agentDir: params.agentDir,
+      skillPaths: [],
+      includeDefaults: true,
+    }).skills;
+  const combinedPrompt = buildCombinedBootstrapPrompt({
+    effectiveSkills: params.effectiveSkills,
+    task: params.task,
+    availableSkills,
+    readFile: params.readFile,
+  });
+
+  (params.writeFile ?? writeFileSync)(params.bootstrapArtifactPath, combinedPrompt, "utf8");
+  return [`${PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE}=${shellEscape(params.bootstrapArtifactPath)}`];
+}
+
 function buildPiPromptArgs(params: {
   effectiveSkills?: string;
   taskDelivery: "direct" | "artifact";
   taskArg: string;
 }): string[] {
-  const skillPrompts = (params.effectiveSkills ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((skill) => `/skill:${skill}`);
+  const skillPrompts = parseEffectiveSkills(params.effectiveSkills).map((skill) => `/skill:${skill}`);
 
-  const needsSeparator = params.taskDelivery === "artifact" && skillPrompts.length > 0;
+  // Artifact-backed launch with skills: use internal bootstrap command
+  // so the parent-prepared combined prompt (skills expanded before task)
+  // is delivered as a single user message by the child's /__subagent_bootstrap handler.
+  if (params.taskDelivery === "artifact" && skillPrompts.length > 0) {
+    return ["/__subagent_bootstrap"];
+  }
 
-  return [
-    ...(needsSeparator ? [""] : []),
-    ...skillPrompts,
-    params.taskArg,
-  ];
+  // Direct launch: positional skill prompts followed by inline task text
+  if (params.taskDelivery === "direct") {
+    return [...skillPrompts, params.taskArg];
+  }
+
+  // Artifact-backed launch without skills: plain @file reference
+  return [params.taskArg];
 }
 
 function activityLabel(activity: SubagentActivityState): string | undefined {
@@ -1001,6 +1083,10 @@ export const __test__ = {
   resolveEffectiveInteractive,
   buildSubagentToolAllowlist,
   buildPiPromptArgs,
+  parseEffectiveSkills,
+  shouldWriteBootstrapArtifact,
+  buildBootstrapPromptEnvParts,
+  buildCombinedBootstrapPrompt,
   formatWidgetRightLabel,
   observeRunningSubagent,
   resolveDenyTools,
@@ -1242,7 +1328,6 @@ async function launchSubagent(
   envParts.push(`PI_SUBAGENT_ID=${shellEscape(id)}`);
   envParts.push(`PI_SUBAGENT_ACTIVITY_FILE=${shellEscape(activityFile)}`);
   envParts.push(`PI_SUBAGENT_SURFACE=${shellEscape(surface)}`);
-  const envPrefix = envParts.join(" ") + " ";
 
   // Pass task and skill prompts to the sub-agent.
   // Only full-context fork mode gets a direct task argument because it already
@@ -1264,7 +1349,20 @@ async function launchSubagent(
     mkdirSync(dirname(artifactPath), { recursive: true });
     writeFileSync(artifactPath, fullTask, "utf8");
     taskArg = `@${artifactPath}`;
+
+    const bootstrapArtifactName = `context/${safeName || "subagent"}-${timestamp}-bootstrap.md`;
+    const bootstrapArtifactPath = join(artifactDir, bootstrapArtifactName);
+    envParts.push(...buildBootstrapPromptEnvParts({
+      taskDelivery: launchBehavior.taskDelivery,
+      effectiveSkills,
+      task: fullTask,
+      bootstrapArtifactPath,
+      cwd: targetCwdForSession,
+      agentDir: effectiveAgentDir,
+    }));
   }
+
+  const envPrefix = envParts.join(" ") + " ";
 
   for (const promptArg of buildPiPromptArgs({
     effectiveSkills,

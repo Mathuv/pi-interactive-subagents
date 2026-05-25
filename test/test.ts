@@ -49,10 +49,11 @@ import {
   getSubagentActivityFile,
   readSubagentActivityFile,
 } from "../pi-extension/subagents/activity.ts";
-import {
+import subagentDoneInit, {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
   findLatestAssistantError,
+  PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE,
 } from "../pi-extension/subagents/subagent-done.ts";
 import { __pollForExitTest__ } from "../pi-extension/subagents/cmux.ts";
 
@@ -1091,25 +1092,156 @@ describe("subagent discovery", () => {
     assert.equal(testApi.buildSubagentToolAllowlist(""), null);
   });
 
-  it("buildPiPromptArgs inserts separator for artifact-backed launches with skills", () => {
+  it("buildPiPromptArgs uses bootstrap command for artifact-backed launches with skills", () => {
     assert.deepEqual(
       testApi.buildPiPromptArgs({ effectiveSkills: "review,lint", taskDelivery: "artifact", taskArg: "@artifact.md" }),
-      ["", "/skill:review", "/skill:lint", "@artifact.md"],
+      ["/__subagent_bootstrap"],
     );
   });
 
-  it("buildPiPromptArgs omits separator for artifact-backed launches without skills", () => {
+  it("buildPiPromptArgs omits bootstrap command for artifact-backed launches without skills", () => {
     assert.deepEqual(
       testApi.buildPiPromptArgs({ effectiveSkills: undefined, taskDelivery: "artifact", taskArg: "@artifact.md" }),
       ["@artifact.md"],
     );
   });
 
-  it("buildPiPromptArgs omits separator for direct launches with skills", () => {
+  it("buildPiPromptArgs omits bootstrap command for artifact-backed launches with whitespace-only skills", () => {
+    assert.deepEqual(
+      testApi.buildPiPromptArgs({ effectiveSkills: "  ", taskDelivery: "artifact", taskArg: "@artifact.md" }),
+      ["@artifact.md"],
+    );
+  });
+
+  it("buildPiPromptArgs uses positional skill prompts for direct launches with skills", () => {
     assert.deepEqual(
       testApi.buildPiPromptArgs({ effectiveSkills: "review", taskDelivery: "direct", taskArg: "do the task" }),
       ["/skill:review", "do the task"],
     );
+  });
+
+  it("buildPiPromptArgs omits skill prompts for direct launches without skills", () => {
+    assert.deepEqual(
+      testApi.buildPiPromptArgs({ effectiveSkills: undefined, taskDelivery: "direct", taskArg: "do it" }),
+      ["do it"],
+    );
+  });
+
+  describe("shouldWriteBootstrapArtifact", () => {
+    it("returns true for artifact-backed with non-empty skills", () => {
+      assert.equal(testApi.shouldWriteBootstrapArtifact("artifact", "review,lint"), true);
+      assert.equal(testApi.shouldWriteBootstrapArtifact("artifact", "single"), true);
+    });
+
+    it("returns false for artifact-backed without skills", () => {
+      assert.equal(testApi.shouldWriteBootstrapArtifact("artifact", undefined), false);
+      assert.equal(testApi.shouldWriteBootstrapArtifact("artifact", ""), false);
+      assert.equal(testApi.shouldWriteBootstrapArtifact("artifact", "  "), false);
+    });
+
+    it("returns false for direct-backed regardless of skills", () => {
+      assert.equal(testApi.shouldWriteBootstrapArtifact("direct", "review"), false);
+      assert.equal(testApi.shouldWriteBootstrapArtifact("direct", undefined), false);
+    });
+  });
+
+  describe("buildBootstrapPromptEnvParts", () => {
+    function testSkill(name: string, filePath: string, baseDir: string) {
+      return { name, filePath, baseDir } as any;
+    }
+
+    it("sets bootstrap env only for artifact-backed launches with non-empty skills", () => {
+      const writes: Array<{ path: string; content: string; encoding: string }> = [];
+      const envParts = testApi.buildBootstrapPromptEnvParts({
+        taskDelivery: "artifact",
+        effectiveSkills: "alpha",
+        task: "TASK TEXT",
+        bootstrapArtifactPath: "/tmp/bootstrap.md",
+        cwd: "/project",
+        agentDir: "/agent",
+        loadAvailableSkills: () => [testSkill("alpha", "/skills/alpha/SKILL.md", "/skills/alpha")],
+        readFile: () => "---\nname: alpha\n---\n\nAlpha body.",
+        writeFile: (path: string, content: string, encoding: string) => writes.push({ path, content, encoding }),
+      });
+
+      assert.deepEqual(envParts, [
+        `${PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE}=${shellEscape("/tmp/bootstrap.md")}`,
+      ]);
+      assert.equal(writes.length, 1);
+      assert.equal(writes[0].path, "/tmp/bootstrap.md");
+      assert.equal(writes[0].encoding, "utf8");
+      assert.match(writes[0].content, /Alpha body\./);
+      assert.match(writes[0].content, /TASK TEXT/);
+    });
+
+    it("loads default skill dirs when no loader override is supplied", () => {
+      withTempDir((root) => {
+        const cwd = join(root, "project");
+        const agentDir = join(root, "agent");
+        const skillDir = join(agentDir, "skills", "alpha");
+        const bootstrapPath = join(root, "bootstrap.md");
+        const writes: Array<{ path: string; content: string; encoding: string }> = [];
+
+        mkdirSync(skillDir, { recursive: true });
+        writeFileSync(join(skillDir, "SKILL.md"), "---\nname: alpha\ndescription: Alpha test skill\n---\n\nAlpha default body.");
+
+        const envParts = testApi.buildBootstrapPromptEnvParts({
+          taskDelivery: "artifact",
+          effectiveSkills: "alpha",
+          task: "TASK TEXT",
+          bootstrapArtifactPath: bootstrapPath,
+          cwd,
+          agentDir,
+          writeFile: (path: string, content: string, encoding: string) => writes.push({ path, content, encoding }),
+        });
+
+        assert.deepEqual(envParts, [
+          `${PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE}=${shellEscape(bootstrapPath)}`,
+        ]);
+        assert.equal(writes.length, 1);
+        assert.equal(writes[0].encoding, "utf8");
+        assert.match(writes[0].content, /Alpha default body\./);
+        assert.match(writes[0].content, /TASK TEXT/);
+      });
+    });
+
+    it("omits bootstrap env and artifact writes for artifact whitespace-only skills", () => {
+      const writes: string[] = [];
+      const envParts = testApi.buildBootstrapPromptEnvParts({
+        taskDelivery: "artifact",
+        effectiveSkills: "  ",
+        task: "TASK TEXT",
+        bootstrapArtifactPath: "/tmp/bootstrap.md",
+        cwd: "/project",
+        agentDir: "/agent",
+        loadAvailableSkills: () => {
+          throw new Error("should not load skills");
+        },
+        writeFile: (path: string) => writes.push(path),
+      });
+
+      assert.deepEqual(envParts, []);
+      assert.deepEqual(writes, []);
+    });
+
+    it("omits bootstrap env and artifact writes for direct launches with skills", () => {
+      const writes: string[] = [];
+      const envParts = testApi.buildBootstrapPromptEnvParts({
+        taskDelivery: "direct",
+        effectiveSkills: "alpha",
+        task: "TASK TEXT",
+        bootstrapArtifactPath: "/tmp/bootstrap.md",
+        cwd: "/project",
+        agentDir: "/agent",
+        loadAvailableSkills: () => {
+          throw new Error("should not load skills");
+        },
+        writeFile: (path: string) => writes.push(path),
+      });
+
+      assert.deepEqual(envParts, []);
+      assert.deepEqual(writes, []);
+    });
   });
 
   it("lists visible agents from discovery", async () => {
@@ -1290,6 +1422,84 @@ describe("subagent-done.ts", () => {
     it("returns null when messages is undefined or empty", () => {
       assert.equal(findLatestAssistantError(undefined), null);
       assert.equal(findLatestAssistantError([]), null);
+    });
+  });
+
+  describe("bootstrap command", () => {
+    function createApi() {
+      const mock = createMockExtensionApi();
+      subagentDoneInit(mock.api);
+      return mock;
+    }
+
+    it("registers __subagent_bootstrap command", () => {
+      const { registeredCommands } = createApi();
+      const cmd = registeredCommands.find((c: any) => c.name === "__subagent_bootstrap");
+      assert.ok(cmd, "expected __subagent_bootstrap command to be registered");
+    });
+
+    it("reads PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE and sends content as user message", () => {
+      const { registeredCommands, sentUserMessages } = createApi();
+      const cmd = registeredCommands.find((c: any) => c.name === "__subagent_bootstrap");
+
+      const dir = createTestDir();
+      try {
+        const promptFile = join(dir, "combined-bootstrap.md");
+        const promptContent = "<skill name=\"karpathy-guidelines\">\nstuff\n</skill>\n\nDo the task.";
+        writeFileSync(promptFile, promptContent);
+
+        const originalEnv = process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE];
+        process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE] = promptFile;
+        try {
+          cmd.handler("", {});
+        } finally {
+          restoreEnvVar(PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE, originalEnv);
+        }
+
+        assert.equal(sentUserMessages.length, 1);
+        assert.equal(sentUserMessages[0], promptContent);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("throws error naming PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE when env var is missing", () => {
+      const { registeredCommands } = createApi();
+      const cmd = registeredCommands.find((c: any) => c.name === "__subagent_bootstrap");
+
+      const originalEnv = process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE];
+      delete process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE];
+      try {
+        assert.throws(
+          () => cmd.handler("", {}),
+          /PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE/,
+        );
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE] = originalEnv;
+        }
+      }
+    });
+
+    it("throws a clear bootstrap error when prompt file cannot be read", () => {
+      const { registeredCommands } = createApi();
+      const cmd = registeredCommands.find((c: any) => c.name === "__subagent_bootstrap");
+
+      const originalEnv = process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE];
+      process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE] = "/nonexistent/path.md";
+      try {
+        assert.throws(
+          () => cmd.handler("", {}),
+          (error: any) => {
+            assert.match(error.message, /__subagent_bootstrap/);
+            assert.match(error.message, /PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE/);
+            assert.match(error.message, /\/nonexistent\/path\.md/);
+            return true;
+          },
+        );
+      } finally {
+        restoreEnvVar(PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE, originalEnv);
+      }
     });
   });
 });
@@ -2734,5 +2944,104 @@ describe("resolveEffectiveAgentParams merge logic", () => {
     assert.equal(result.thinking, "minimal");
     assert.equal(result.tools, "read");
     assert.equal(result.skills, "github");
+  });
+});
+
+describe("combined bootstrap prompt", () => {
+  const testApi = (subagentsModule as any).__test__;
+
+  function testSkill(name: string, filePath: string, baseDir: string) {
+    return { name, filePath, baseDir } as any;
+  }
+
+  describe("parseEffectiveSkills", () => {
+    it("splits comma-separated values and trims whitespace", () => {
+      assert.deepEqual(testApi.parseEffectiveSkills("a,b"), ["a", "b"]);
+      assert.deepEqual(testApi.parseEffectiveSkills("  a , b  "), ["a", "b"]);
+      assert.deepEqual(testApi.parseEffectiveSkills("a"), ["a"]);
+    });
+
+    it("filters empty entries from doubled commas and trailing commas", () => {
+      assert.deepEqual(testApi.parseEffectiveSkills("a,,b"), ["a", "b"]);
+      assert.deepEqual(testApi.parseEffectiveSkills("a,"), ["a"]);
+      assert.deepEqual(testApi.parseEffectiveSkills(",a"), ["a"]);
+    });
+
+    it("returns empty array for empty, undefined, or whitespace-only input", () => {
+      assert.deepEqual(testApi.parseEffectiveSkills(""), []);
+      assert.deepEqual(testApi.parseEffectiveSkills(undefined), []);
+      assert.deepEqual(testApi.parseEffectiveSkills("  "), []);
+    });
+  });
+
+  describe("buildCombinedBootstrapPrompt", () => {
+    it("trims whitespace and emits skills in effective order before task", () => {
+      const prompt = testApi.buildCombinedBootstrapPrompt({
+        effectiveSkills: " second , first ",
+        task: "TASK TEXT",
+        availableSkills: [
+          testSkill("first", "/skills/first/SKILL.md", "/skills/first"),
+          testSkill("second", "/skills/second/SKILL.md", "/skills/second"),
+        ],
+        readFile: (filePath: string) => filePath.includes("second")
+          ? "---\nname: second\n---\n\nSecond body."
+          : "---\nname: first\n---\n\nFirst body.",
+      });
+
+      const secondIdx = prompt.indexOf("Second body.");
+      const firstIdx = prompt.indexOf("First body.");
+      const taskIdx = prompt.indexOf("TASK TEXT");
+      assert.ok(secondIdx < firstIdx, "effective order should beat available-skill discovery order");
+      assert.ok(firstIdx < taskIdx, "task should come after all skill blocks");
+    });
+
+    it("strips frontmatter and formats Pi-native skill XML", () => {
+      const prompt = testApi.buildCombinedBootstrapPrompt({
+        effectiveSkills: "alpha",
+        task: "TASK TEXT",
+        availableSkills: [testSkill("alpha", "/skills/alpha/SKILL.md", "/skills/alpha")],
+        readFile: () => "---\nname: alpha\ndescription: Test skill\n---\n\nAlpha body.",
+      });
+
+      assert.ok(prompt.includes('<skill name="alpha" location="/skills/alpha/SKILL.md">'));
+      assert.ok(prompt.includes("References are relative to /skills/alpha."));
+      assert.ok(prompt.includes("Alpha body."));
+      assert.ok(prompt.includes("</skill>"));
+      assert.ok(!prompt.includes("description: Test skill"));
+      assert.ok(!prompt.includes("---"));
+    });
+
+    it("emits literal /skill:name for missing skills before task", () => {
+      const prompt = testApi.buildCombinedBootstrapPrompt({
+        effectiveSkills: "missing",
+        task: "TASK TEXT",
+        availableSkills: [],
+      });
+
+      assert.equal(prompt, "/skill:missing\n\nTASK TEXT");
+    });
+
+    it("emits literal /skill:name for unreadable skills before task", () => {
+      const prompt = testApi.buildCombinedBootstrapPrompt({
+        effectiveSkills: "broken",
+        task: "TASK TEXT",
+        availableSkills: [testSkill("broken", "/skills/broken/SKILL.md", "/skills/broken")],
+        readFile: () => {
+          throw new Error("permission denied");
+        },
+      });
+
+      assert.equal(prompt, "/skill:broken\n\nTASK TEXT");
+    });
+
+    it("returns task text unchanged when no effective skills are present", () => {
+      const prompt = testApi.buildCombinedBootstrapPrompt({
+        effectiveSkills: "  ",
+        task: "TASK TEXT",
+        availableSkills: [testSkill("unused", "/skills/unused/SKILL.md", "/skills/unused")],
+      });
+
+      assert.equal(prompt, "TASK TEXT");
+    });
   });
 });

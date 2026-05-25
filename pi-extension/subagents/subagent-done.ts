@@ -6,8 +6,10 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Box, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createSubagentActivityRecorder } from "./activity.ts";
+
+export const PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE = "PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE";
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted;
@@ -319,6 +321,31 @@ export default function (pi: ExtensionAPI) {
         content: [{ type: "text", text: "Shutting down subagent session." }],
         details: {},
       };
+    },
+  });
+
+  // Internal bootstrap command: delivers the parent-prepared combined prompt
+  // artifact as a raw user message (no /skill: expansion, no @file wrapping).
+  pi.registerCommand("__subagent_bootstrap", {
+    description: "Internal: deliver parent-prepared combined bootstrap prompt.",
+    handler: (_args: string, _ctx: any) => {
+      const promptFile = process.env[PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE];
+      if (!promptFile) {
+        throw new Error(
+          `Missing ${PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE} environment variable. ` +
+          "This command is internal plumbing for artifact-backed subagent launches.",
+        );
+      }
+      let promptText: string;
+      try {
+        promptText = readFileSync(promptFile, "utf8");
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `__subagent_bootstrap failed to read ${PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE} file ${promptFile}: ${reason}`,
+        );
+      }
+      pi.sendUserMessage(promptText);
     },
   });
 }
