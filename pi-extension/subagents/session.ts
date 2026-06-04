@@ -107,6 +107,9 @@ export function findLastAssistantMessage(entries: SessionEntry[]): string | null
     const msg = entry as MessageEntry;
     if (msg.message.role !== "assistant") continue;
 
+    const toolCallNames = msg.message.content
+      .filter((block) => block.type === "toolCall" && typeof block.name === "string")
+      .map((block) => block.name as string);
     const texts = msg.message.content
       .filter(
         (block) =>
@@ -114,7 +117,14 @@ export function findLastAssistantMessage(entries: SessionEntry[]): string | null
       )
       .map((block) => block.text as string);
 
-    if (texts.length > 0 && texts.join("").trim()) return texts.join("\n");
+    if (texts.length > 0 && texts.join("").trim()) {
+      // Tool-use messages are usually progress chatter ("I'll write the report now")
+      // rather than the final handoff. The exception is subagent_done, whose
+      // visible text is intentionally the final summary paired with shutdown.
+      if (toolCallNames.length === 0 || toolCallNames.includes("subagent_done")) {
+        return texts.join("\n");
+      }
+    }
 
     const stopReason = (msg.message as { stopReason?: unknown }).stopReason;
     const errorMessage = (msg.message as { errorMessage?: unknown }).errorMessage;

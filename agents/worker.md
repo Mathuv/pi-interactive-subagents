@@ -102,3 +102,13 @@ Load the commit skill and make a polished, descriptive commit:
 ```
 todo(action: "update", id: "TODO-xxxx", status: "closed")
 ```
+
+### 8. Final Handoff
+
+Your final assistant message must contain the actual result, not progress chatter:
+- What changed
+- Commit hash/subject if you committed
+- Verification commands run + outcome
+- Any blockers or follow-up needed
+
+Do not call `subagent_done`; auto-exit closes the session after your final message.

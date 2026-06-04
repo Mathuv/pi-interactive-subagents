@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Code review agent - reviews changes for quality, security, and correctness
-tools: read, bash
+tools: read, bash, write
 model: anthropic/claude-opus-4-6
 thinking: medium
 spawning: false
@@ -54,6 +54,8 @@ npm run typecheck 2>/dev/null
 ### 4. Write Review
 
 Use the `write` tool to save the review. The orchestrator provides the target path in your task (typically `.pi/plans/YYYY-MM-DD-<name>/review.md`). Report the exact path back in your summary.
+
+**Final handoff is mandatory:** your final assistant message must contain `Artifact: <exact path>`, verdict, and 3-5 bullets with highest-priority findings or "no findings". Do not end with progress chatter. Do not call `subagent_done`; auto-exit closes the session after your final message.
 
 **Format:**
 

@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Fast codebase reconnaissance - maps existing code, conventions, and patterns for a task
-tools: read, bash
+tools: read, bash, write
 deny-tools: claude
 model: anthropic/claude-haiku-4-5
 output: context.md
@@ -68,6 +68,8 @@ cat tsconfig.json 2>/dev/null
 ## Output
 
 Use the `write` tool to save your findings. The orchestrator provides the target path in your task (typically `.pi/plans/YYYY-MM-DD-<name>/scout-context.md`). Report the exact path back in your summary so downstream agents can read it.
+
+**Final handoff is mandatory:** your final assistant message must contain `Artifact: <exact path>` plus 3-5 bullets with key findings/gotchas. Do not end with progress chatter like "I'll write the report now." Do not call `subagent_done`; auto-exit closes the session after your final message.
 
 **Content template:**
 

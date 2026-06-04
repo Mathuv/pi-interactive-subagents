@@ -86,6 +86,8 @@ export default function (pi: ExtensionAPI) {
   const subagentName = process.env.PI_SUBAGENT_NAME ?? "";
   const subagentAgent = process.env.PI_SUBAGENT_AGENT ?? "";
   const deniedToolsValue = process.env.PI_DENY_TOOLS;
+  const deniedToolNames = new Set(parseDeniedTools(deniedToolsValue));
+  const shouldRegister = (toolName: string) => !deniedToolNames.has(toolName);
   const autoExit = process.env.PI_SUBAGENT_AUTO_EXIT === "1";
   const recorder = createSubagentActivityRecorder({
     runningChildId: process.env.PI_SUBAGENT_ID,
@@ -267,62 +269,82 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
-    name: "caller_ping",
-    label: "Caller Ping",
-    description:
-      "Send a help request to the parent agent and exit this session. " +
-      "The parent will be notified with your message and can resume this session with a response. " +
-      "Use when you're stuck, need clarification, or need the parent to take action.",
-    parameters: Type.Object({
-      message: Type.String({ description: "What you need help with" }),
-    }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const sessionFile = process.env.PI_SUBAGENT_SESSION;
-      if (!sessionFile) {
-        throw new Error(
-          "caller_ping is only available in subagent contexts. " +
-            "PI_SUBAGENT_SESSION environment variable is not set.",
-        );
-      }
+  if (shouldRegister("caller_ping")) {
+    pi.registerTool({
+      name: "caller_ping",
+      label: "Caller Ping",
+      description:
+        "Send a help request to the parent agent and exit this session. " +
+        "The parent will be notified with your message and can resume this session with a response. " +
+        "Use when you're stuck, need clarification, or need the parent to take action.",
+      parameters: Type.Object({
+        message: Type.String({ description: "What you need help with" }),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const sessionFile = process.env.PI_SUBAGENT_SESSION;
+        if (!sessionFile) {
+          throw new Error(
+            "caller_ping is only available in subagent contexts. " +
+              "PI_SUBAGENT_SESSION environment variable is not set.",
+          );
+        }
 
-      recorder.callerPing();
-      const exitData = {
-        type: "ping" as const,
-        name: process.env.PI_SUBAGENT_NAME ?? "subagent",
-        message: params.message,
-      };
-      writeFileSync(`${sessionFile}.exit`, JSON.stringify(exitData));
+        recorder.callerPing();
+        const exitData = {
+          type: "ping" as const,
+          name: process.env.PI_SUBAGENT_NAME ?? "subagent",
+          message: params.message,
+        };
+        writeFileSync(`${sessionFile}.exit`, JSON.stringify(exitData));
 
-      ctx.shutdown();
-      return {
-        content: [{ type: "text", text: "Ping sent. Session will exit and parent will be notified." }],
-        details: {},
-      };
-    },
-  });
+        ctx.shutdown();
+        return {
+          content: [{ type: "text", text: "Ping sent. Session will exit and parent will be notified." }],
+          details: {},
+        };
+      },
+    });
+  }
 
-  pi.registerTool({
-    name: "subagent_done",
-    label: "Subagent Done",
-    description:
-      "Call this tool when you have completed your task. " +
-      "It will close this session and return your results to the main session. " +
-      "Your LAST assistant message before calling this becomes the summary returned to the caller.",
-    parameters: Type.Object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-      const sessionFile = process.env.PI_SUBAGENT_SESSION;
-      recorder.subagentDone();
-      if (sessionFile) {
-        writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "done" }));
-      }
-      ctx.shutdown();
-      return {
-        content: [{ type: "text", text: "Shutting down subagent session." }],
-        details: {},
-      };
-    },
-  });
+  if (shouldRegister("subagent_done")) {
+    pi.registerTool({
+      name: "subagent_done",
+      label: "Subagent Done",
+      description:
+        "Call this tool only after your task is complete and your final answer/report exists. " +
+        "Before calling it, include the same concise handoff in visible assistant text. " +
+        "Pass that handoff in `summary`; include `artifactPath` when you wrote a report/artifact. " +
+        "The summary is returned to the parent session.",
+      parameters: Type.Object({
+        summary: Type.String({
+          description:
+            "Concise final handoff for the parent: artifact/report path if any plus 3-5 bullets of findings, changes, tests, or blockers.",
+        }),
+        artifactPath: Type.Optional(
+          Type.String({ description: "Exact path to the report/artifact you wrote, if any." }),
+        ),
+      }),
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const sessionFile = process.env.PI_SUBAGENT_SESSION;
+        recorder.subagentDone();
+        if (sessionFile) {
+          writeFileSync(
+            `${sessionFile}.exit`,
+            JSON.stringify({
+              type: "done",
+              summary: params.summary,
+              ...(params.artifactPath ? { artifactPath: params.artifactPath } : {}),
+            }),
+          );
+        }
+        ctx.shutdown();
+        return {
+          content: [{ type: "text", text: "Summary sent. Shutting down subagent session." }],
+          details: {},
+        };
+      },
+    });
+  }
 
   // Internal bootstrap command: delivers the parent-prepared combined prompt
   // artifact as a raw user message (no /skill: expansion, no @file wrapping).

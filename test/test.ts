@@ -306,6 +306,34 @@ describe("session.ts", () => {
       assert.equal(findLastAssistantMessage(entries), "Real summary content.");
     });
 
+    it("skips progress text attached to ordinary tool calls", () => {
+      const progressMsg = {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Now let me write the report." },
+            { type: "toolCall", name: "write", arguments: { path: "report.md" } },
+          ],
+        },
+      };
+      assert.equal(findLastAssistantMessage([progressMsg] as any[]), null);
+    });
+
+    it("keeps final text paired with subagent_done", () => {
+      const doneMsg = {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Artifact: report.md\n\n- Finding one" },
+            { type: "toolCall", name: "subagent_done", arguments: { summary: "Artifact: report.md" } },
+          ],
+        },
+      };
+      assert.equal(findLastAssistantMessage([doneMsg] as any[]), "Artifact: report.md\n\n- Finding one");
+    });
+
     it("surfaces errorMessage when last assistant ended with stopReason=error and no text", () => {
       // Reproduces the overload-exhaustion case: an earlier turn looked
       // normal, then the provider went 529 and auto-retry gave up. Without
@@ -1080,9 +1108,13 @@ describe("subagent discovery", () => {
     );
   });
 
-  it("buildSubagentToolAllowlist preserves requested tools and adds child control tools", () => {
+  it("buildSubagentToolAllowlist preserves requested tools and adds requested child control tools", () => {
     assert.equal(
       testApi.buildSubagentToolAllowlist("read,bash,web_search"),
+      "read,bash,web_search,caller_ping",
+    );
+    assert.equal(
+      testApi.buildSubagentToolAllowlist("read,bash,web_search", { includeDoneTool: true }),
       "read,bash,web_search,caller_ping,subagent_done",
     );
   });
@@ -1425,6 +1457,62 @@ describe("subagent-done.ts", () => {
     });
   });
 
+  describe("tools", () => {
+    function createApi() {
+      const mock = createMockExtensionApi();
+      subagentDoneInit(mock.api);
+      return mock;
+    }
+
+    it("writes subagent_done summary and artifact path to the exit sidecar", async () => {
+      const dir = createTestDir();
+      const sessionFile = join(dir, "child.jsonl");
+      const previousSession = process.env.PI_SUBAGENT_SESSION;
+      const previousDenyTools = process.env.PI_DENY_TOOLS;
+      process.env.PI_SUBAGENT_SESSION = sessionFile;
+      delete process.env.PI_DENY_TOOLS;
+
+      try {
+        const { registeredTools } = createApi();
+        const tool = registeredTools.find((t: any) => t.name === "subagent_done");
+        assert.ok(tool, "expected subagent_done tool to be registered");
+
+        let shutdownCalled = false;
+        await tool.execute(
+          "call-1",
+          { summary: "Artifact: /tmp/report.md\n\n- Done", artifactPath: "/tmp/report.md" },
+          undefined,
+          undefined,
+          { shutdown() { shutdownCalled = true; } },
+        );
+
+        const sidecar = JSON.parse(readFileSync(`${sessionFile}.exit`, "utf8"));
+        assert.deepEqual(sidecar, {
+          type: "done",
+          summary: "Artifact: /tmp/report.md\n\n- Done",
+          artifactPath: "/tmp/report.md",
+        });
+        assert.equal(shutdownCalled, true);
+      } finally {
+        restoreEnvVar("PI_SUBAGENT_SESSION", previousSession);
+        restoreEnvVar("PI_DENY_TOOLS", previousDenyTools);
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not register subagent_done when denied", () => {
+      const previousDenyTools = process.env.PI_DENY_TOOLS;
+      process.env.PI_DENY_TOOLS = "subagent_done";
+      try {
+        const { registeredTools } = createApi();
+        assert.equal(registeredTools.some((t: any) => t.name === "subagent_done"), false);
+        assert.equal(registeredTools.some((t: any) => t.name === "caller_ping"), true);
+      } finally {
+        restoreEnvVar("PI_DENY_TOOLS", previousDenyTools);
+      }
+    });
+  });
+
   describe("bootstrap command", () => {
     function createApi() {
       const mock = createMockExtensionApi();
@@ -1525,6 +1613,22 @@ describe("cmux.ts interpretExitSidecar", () => {
     });
   });
 
+  it("decodes done payload summaries and artifact paths", () => {
+    assert.deepEqual(
+      interpretExitSidecar({
+        type: "done",
+        summary: "Done.\n",
+        artifactPath: " /tmp/report.md ",
+      }),
+      {
+        reason: "done",
+        exitCode: 0,
+        summary: "Done.",
+        artifactPath: "/tmp/report.md",
+      },
+    );
+  });
+
   it("decodes error payloads and propagates the message with a non-zero exit code", () => {
     assert.deepEqual(
       interpretExitSidecar({
@@ -1590,6 +1694,16 @@ describe("tool registration", () => {
     assert.equal(denied.has("subagent"), true);
     assert.equal(denied.has("subagent_interrupt"), true);
     assert.equal(denied.has("subagent_resume"), true);
+  });
+
+  it("keeps subagent_done out of auto-exit allowlists", () => {
+    const testApi = (subagentsModule as any).__test__;
+
+    assert.equal(testApi.buildSubagentToolAllowlist("read,bash"), "read,bash,caller_ping");
+    assert.equal(
+      testApi.buildSubagentToolAllowlist("read,bash", { includeDoneTool: true }),
+      "read,bash,caller_ping,subagent_done",
+    );
   });
 
   it("renders partial subagent tool-call args without throwing", () => {
@@ -2071,6 +2185,19 @@ describe("subagent interruption", () => {
     assert.match(presentation, /failed \(exit code 130\)/);
     assert.doesNotMatch(presentation, /interrupted/);
     assert.match(presentation, /Resume: pi --session/);
+  });
+
+  it("formats sidecar artifact path into summary when missing", () => {
+    const testApi = (subagentsModule as any).__test__;
+
+    assert.equal(
+      testApi.formatSidecarSummary("- Finding one", "/tmp/report.md"),
+      "Artifact: /tmp/report.md\n\n- Finding one",
+    );
+    assert.equal(
+      testApi.formatSidecarSummary("Artifact: /tmp/report.md\n\n- Finding one", "/tmp/report.md"),
+      "Artifact: /tmp/report.md\n\n- Finding one",
+    );
   });
 
   it("renders a clear provider/agent error when errorMessage is set", () => {

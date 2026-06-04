@@ -1222,6 +1222,10 @@ export interface PollResult {
   exitCode: number;
   /** Ping data if reason is "ping" */
   ping?: { name: string; message: string };
+  /** Summary explicitly provided by subagent_done. */
+  summary?: string;
+  /** Artifact/report path explicitly provided by subagent_done. */
+  artifactPath?: string;
   /** Error message if reason is "error" (auto-retry exhausted, provider overload, etc.) */
   errorMessage?: string;
 }
@@ -1245,6 +1249,16 @@ function interpretExitSidecar(data: any): PollResult {
         ? data.errorMessage
         : "Subagent exited with stopReason=error (no errorMessage in sidecar).";
     return { reason: "error", exitCode: 1, errorMessage };
+  }
+  if (data?.type === "done") {
+    const summary = typeof data.summary === "string" ? data.summary.trim() : "";
+    const artifactPath = typeof data.artifactPath === "string" ? data.artifactPath.trim() : "";
+    return {
+      reason: "done",
+      exitCode: 0,
+      ...(summary ? { summary } : {}),
+      ...(artifactPath ? { artifactPath } : {}),
+    };
   }
   return { reason: "done", exitCode: 0 };
 }

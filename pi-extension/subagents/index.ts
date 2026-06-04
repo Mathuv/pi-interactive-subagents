@@ -475,6 +475,14 @@ function resolveResultPresentation(
     : `Sub-agent "${name}" completed (${formatElapsed(result.elapsed)}).\n\n${result.summary}${sessionRef}`;
 }
 
+function formatSidecarSummary(summary?: string, artifactPath?: string): string | null {
+  const cleanSummary = summary?.trim() ?? "";
+  const cleanArtifactPath = artifactPath?.trim() ?? "";
+  if (!cleanSummary && !cleanArtifactPath) return null;
+  if (!cleanArtifactPath || cleanSummary.includes(cleanArtifactPath)) return cleanSummary;
+  return cleanSummary ? `Artifact: ${cleanArtifactPath}\n\n${cleanSummary}` : `Artifact: ${cleanArtifactPath}`;
+}
+
 /**
  * Result from running a single subagent.
  */
@@ -487,6 +495,10 @@ interface SubagentResult {
   exitCode: number;
   elapsed: number;
   error?: string;
+  /** Explicit summary from subagent_done sidecar, if provided. */
+  sidecarSummary?: string;
+  /** Report/artifact path from subagent_done sidecar, if provided. */
+  artifactPath?: string;
   /** Provider/agent error message when auto-retry exhausted (overload, rate limit, etc.). */
   errorMessage?: string;
   ping?: { name: string; message: string };
@@ -669,17 +681,21 @@ function updateWidget() {
  * first positional message so that /skill: args land in messages[1..] and arrive
  * as standalone prompts in the child session.
  */
-const SUBAGENT_CONTROL_TOOLS = ["caller_ping", "subagent_done"] as const;
+const SUBAGENT_CONTROL_TOOLS = ["caller_ping"] as const;
 
 /**
  * Build the child --tools allowlist.
  *
  * Pi 0.70+ applies --tools to built-in, extension, and custom tools. If a
  * subagent definition restricts tools to e.g. "read,bash,write", the child
- * control tools from subagent-done.ts would otherwise be hidden, leaving a
- * manually resumed or user-touched subagent unable to call subagent_done.
+ * control tools from subagent-done.ts would otherwise be hidden. Autonomous
+ * auto-exit agents do not need subagent_done, so callers can omit it to avoid
+ * premature tool-only shutdowns.
  */
-function buildSubagentToolAllowlist(effectiveTools?: string): string | null {
+function buildSubagentToolAllowlist(
+  effectiveTools?: string,
+  options: { includeDoneTool?: boolean } = {},
+): string | null {
   const requested = (effectiveTools ?? "")
     .split(",")
     .map((tool) => tool.trim())
@@ -690,6 +706,9 @@ function buildSubagentToolAllowlist(effectiveTools?: string): string | null {
   const allow = new Set(requested);
   for (const tool of SUBAGENT_CONTROL_TOOLS) {
     allow.add(tool);
+  }
+  if (options.includeDoneTool) {
+    allow.add("subagent_done");
   }
 
   return [...allow].join(",");
@@ -1094,6 +1113,7 @@ export const __test__ = {
   requestSubagentInterrupt,
   handleSubagentInterrupt,
   resolveResultPresentation,
+  formatSidecarSummary,
   resolveResumeLaunchBehavior,
   loadAgentSettingsFile,
   loadAgentSettings,
@@ -1180,19 +1200,34 @@ async function launchSubagent(
   // Only full-context fork mode inherits prior conversation state.
   // Blank-session modes need the wrapper instructions and artifact-backed handoff.
   const modeHint = agentDefs?.autoExit
-    ? "Complete your task autonomously."
-    : "Complete your task. When finished, call the subagent_done tool. The user can interact with you at any time.";
+    ? "Complete your task autonomously. Do not call subagent_done; auto-exit closes this session after your final assistant message."
+    : "Complete your task. When finished, call the subagent_done tool with a summary. The user can interact with you at any time.";
   const summaryInstruction = agentDefs?.autoExit
-    ? "Your FINAL assistant message should summarize what you accomplished."
-    : "Your FINAL assistant message (before calling subagent_done or before the user exits) should summarize what you accomplished.";
+    ? [
+      "Final handoff protocol:",
+      "- Your FINAL assistant message must be the actual result, not progress chatter.",
+      "- If you wrote an artifact/report/review/context file, include `Artifact: <path>` with the exact path.",
+      "- Include 3-5 bullets with key findings, changes, verification, or blockers.",
+    ].join("\n")
+    : [
+      "Final handoff protocol:",
+      "- Before finishing, write a final assistant message containing actual results, not progress chatter.",
+      "- If you wrote an artifact/report/review/context file, include `Artifact: <path>` with the exact path.",
+      "- Include 3-5 bullets with key findings, changes, verification, or blockers.",
+      "- Then call subagent_done with the same text in `summary` and `artifactPath` when applicable.",
+    ].join("\n");
   const denySet = resolveDenyTools(agentDefs);
+  if (agentDefs?.autoExit) {
+    denySet.add("subagent_done");
+  }
   const identity = agentDefs?.body ?? params.systemPrompt ?? null;
   const systemPromptMode = agentDefs?.systemPromptMode;
   const identityInSystemPrompt = systemPromptMode && identity;
   const roleBlock = identity && !identityInSystemPrompt ? `\n\n${identity}` : "";
+  const taskWithHandoff = `${modeHint}\n\n${params.task}\n\n${summaryInstruction}`;
   const fullTask = inheritsConversationContext
-    ? params.task
-    : `${roleBlock}\n\n${modeHint}\n\n${params.task}\n\n${summaryInstruction}`;
+    ? taskWithHandoff
+    : `${roleBlock}\n\n${taskWithHandoff}`;
   // ── Claude Code CLI path ──
   if (agentDefs?.cli === "claude") {
     const sentinelFile = `/tmp/pi-claude-${id}-done`;
@@ -1298,7 +1333,9 @@ async function launchSubagent(
     parts.push(flag, shellEscape(syspromptPath));
   }
 
-  const toolAllowlist = buildSubagentToolAllowlist(effectiveTools);
+  const toolAllowlist = buildSubagentToolAllowlist(effectiveTools, {
+    includeDoneTool: !agentDefs?.autoExit,
+  });
   if (toolAllowlist) {
     parts.push("--tools", shellEscape(toolAllowlist));
   }
@@ -1497,10 +1534,12 @@ async function watchSubagent(
     }
 
     // Pi subagent result extraction
+    const sidecarSummary = formatSidecarSummary(result.summary, result.artifactPath);
     let summary: string;
     if (existsSync(sessionFile)) {
       const allEntries = getNewEntries(sessionFile, 0);
       summary =
+        sidecarSummary ??
         findLastAssistantMessage(allEntries) ??
         (result.errorMessage
           ? `Subagent error: ${result.errorMessage}`
@@ -1508,11 +1547,12 @@ async function watchSubagent(
             ? `Sub-agent exited with code ${result.exitCode}`
             : "Sub-agent exited without output");
     } else {
-      summary = result.errorMessage
-        ? `Subagent error: ${result.errorMessage}`
-        : result.exitCode !== 0
-          ? `Sub-agent exited with code ${result.exitCode}`
-          : "Sub-agent exited without output";
+      summary = sidecarSummary ??
+        (result.errorMessage
+          ? `Subagent error: ${result.errorMessage}`
+          : result.exitCode !== 0
+            ? `Sub-agent exited with code ${result.exitCode}`
+            : "Sub-agent exited without output");
     }
 
     closeSurface(surface);
@@ -1526,6 +1566,8 @@ async function watchSubagent(
       exitCode: result.exitCode,
       elapsed,
       ping: result.ping,
+      ...(sidecarSummary ? { sidecarSummary } : {}),
+      ...(result.artifactPath ? { artifactPath: result.artifactPath } : {}),
       ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
     };
   } catch (err: any) {
@@ -1696,6 +1738,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   exitCode: result.exitCode,
                   elapsed: result.elapsed,
                   sessionFile: result.sessionFile,
+                  ...(result.artifactPath ? { artifactPath: result.artifactPath } : {}),
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
                   ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
                 },
@@ -2108,7 +2151,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             }
 
             const allEntries = getNewEntries(params.sessionPath, entryCountBefore);
-            const summary = findLastAssistantMessage(allEntries) ??
+            const summary = result.sidecarSummary ?? findLastAssistantMessage(allEntries) ??
               (result.errorMessage
                 ? `Subagent error: ${result.errorMessage}`
                 : result.exitCode !== 0
@@ -2130,6 +2173,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   exitCode: result.exitCode,
                   elapsed: result.elapsed,
                   sessionFile: params.sessionPath,
+                  ...(result.artifactPath ? { artifactPath: result.artifactPath } : {}),
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
                 },
               },

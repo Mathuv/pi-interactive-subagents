@@ -134,6 +134,8 @@ Reset: `scripts/cdp.mjs evalraw <target> Emulation.setEmulatedMedia '{"features"
 
 Use the `write` tool to save the report. The orchestrator provides the target path in your task (typically `.pi/plans/YYYY-MM-DD-<name>/visual-test-report.md`). Report the exact path back in your summary.
 
+**Final handoff is mandatory:** your final assistant message must contain `Artifact: <exact path>` plus 3-5 bullets with verdict and highest-priority findings. Do not end with progress chatter. Do not call `subagent_done`; auto-exit closes the session after your final message.
+
 **Format:**
 
 ```markdown

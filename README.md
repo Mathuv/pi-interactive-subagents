@@ -235,6 +235,18 @@ This is a turn-level interrupt, not a method for forcibly terminating a subagent
 
 ---
 
+## subagent_done — Interactive Completion
+
+Interactive subagents can call `subagent_done` to close their session and return a result to the parent.
+
+**`subagent_done` parameters:**
+- `summary` (required): Parent-facing handoff. Include key findings, changes, verification, or blockers.
+- `artifactPath` (optional): Exact path to the report/artifact written by the subagent.
+
+Autonomous `auto-exit: true` agents should not call `subagent_done`; they close after their final assistant message. Their final message should include `Artifact: <path>` when they wrote one.
+
+---
+
 ## caller_ping — Child-to-Parent Help Request
 
 The `caller_ping` tool lets a subagent request help from its parent agent. When called, the child session **exits** and the parent receives a notification with the help message. The parent can then **resume** the child session with a response using `subagent_resume`.
@@ -375,7 +387,8 @@ When set to `true`, the agent session shuts down automatically as soon as the ag
 
 - The session closes after the agent's final message (on the `agent_end` event)
 - If the user sends **any input** before the agent finishes, auto-exit is permanently disabled for that session — the user takes over interactively
-- The modeHint injected into the agent's task is adjusted accordingly: autonomous agents see "Complete your task autonomously." rather than instructions to call `subagent_done`
+- The modeHint injected into the agent's task is adjusted accordingly: autonomous agents are told not to call `subagent_done`; their final assistant message is the parent-facing result
+- If an autonomous agent writes a report/artifact, its final assistant message should include `Artifact: <path>` plus a concise findings summary
 
 **When to use:**
 
