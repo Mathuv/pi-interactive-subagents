@@ -2223,6 +2223,70 @@ describe("startup failure reporting", () => {
   });
 });
 
+describe("model preflight", () => {
+  const testApi = (subagentsModule as any).__test__;
+
+  function stubRegistry() {
+    const models = [
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      { provider: "openai-codex", id: "gpt-5.4" },
+      { provider: "opencode-go", id: "deepseek-v4-flash" },
+    ];
+    return {
+      find(provider: string, modelId: string) {
+        return models.find((m) => m.provider === provider && m.id === modelId);
+      },
+      getAll() {
+        return models;
+      },
+    };
+  }
+
+  it("accepts known models, with and without a :thinking suffix", () => {
+    assert.equal(
+      testApi.validateModelPreflight("anthropic/claude-sonnet-4-6:thinking", stubRegistry()),
+      null,
+    );
+    assert.equal(testApi.validateModelPreflight("openai-codex/gpt-5.4", stubRegistry()), null);
+  });
+
+  it("rejects unknown models and suggests the provider's models", () => {
+    // The June-2/3 incident: reviewer pinned to gpt-5.3-codex, which the
+    // ChatGPT-account provider rejects — each spawn burned 4-5s before dying.
+    const error = testApi.validateModelPreflight("openai-codex/gpt-5.3-codex", stubRegistry());
+
+    assert.ok(error, "expected a validation error");
+    assert.match(error, /openai-codex\/gpt-5\.3-codex/);
+    assert.match(error, /openai-codex\/gpt-5\.4/);
+  });
+
+  it("rejects model strings without a provider prefix", () => {
+    const error = testApi.validateModelPreflight("claude-sonnet-4-6", stubRegistry());
+
+    assert.ok(error, "expected a validation error");
+    assert.match(error, /provider\/id/);
+    assert.match(error, /anthropic\/claude-sonnet-4-6/);
+  });
+
+  it("subagent tool fails fast on unknown model before any launch", async () => {
+    const { api, registeredTools } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const tool = registeredTools.find((t: any) => t.name === "subagent");
+    assert.ok(tool, "expected subagent tool to be registered");
+
+    const result = await tool.execute(
+      "tc1",
+      { name: "X", task: "T", model: "nonexistent/foo" },
+      undefined,
+      undefined,
+      { modelRegistry: stubRegistry() },
+    );
+
+    assert.equal(result.details.error, "unknown model");
+    assert.match(result.content[0].text, /nonexistent\/foo/);
+  });
+});
+
 describe("cancelled subagent presentation", () => {
   it("presents cancellation as cancelled, not failed", () => {
     const testApi = (subagentsModule as any).__test__;

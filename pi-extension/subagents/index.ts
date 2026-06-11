@@ -504,6 +504,48 @@ function resolveResultPresentation(
 }
 
 /**
+ * Validate an effective model string against pi's model registry before
+ * launching. A bad model (e.g. a stale pin in agents.json) used to cost a
+ * full spawn that died 4-5s later with a provider 400; failing the tool call
+ * instantly is cheaper and names the valid alternatives.
+ *
+ * Returns null when valid, otherwise a user-facing error message.
+ */
+function validateModelPreflight(
+  effectiveModel: string,
+  registry: {
+    find(provider: string, modelId: string): unknown;
+    getAll(): Array<{ provider: string; id: string }>;
+  },
+): string | null {
+  const base = effectiveModel.split(":")[0]; // strip :thinking suffix
+  const slash = base.indexOf("/");
+  const provider = slash === -1 ? "" : base.slice(0, slash);
+  const modelId = slash === -1 ? base : base.slice(slash + 1);
+
+  if (provider && registry.find(provider, modelId)) return null;
+
+  const all = registry.getAll();
+  const sameProvider = provider ? all.filter((m) => m.provider === provider) : [];
+  const idNeedle = modelId.toLowerCase();
+  const matches = sameProvider.length > 0
+    ? sameProvider
+    : all.filter(
+        (m) =>
+          m.id.toLowerCase().includes(idNeedle) || idNeedle.includes(m.id.toLowerCase()),
+      );
+  const suggestions = matches.slice(0, 5).map((m) => `${m.provider}/${m.id}`);
+
+  return (
+    `Error: unknown model "${effectiveModel}" — not in pi's model registry.` +
+    (slash === -1 ? ` Model must be "provider/id".` : "") +
+    (suggestions.length > 0
+      ? `\nDid you mean: ${suggestions.join(", ")}?`
+      : "\nNo similar models found; check `pi --list-models`.")
+  );
+}
+
+/**
  * Summary for a subagent process that died before pi created its session file.
  * The only diagnostics in that case are on the terminal screen (e.g. extension
  * load conflicts printed to stderr), so surface them instead of a bare exit code.
@@ -1145,6 +1187,7 @@ export const __test__ = {
   loadAgentSettings,
   reloadAgentSettingsForTest,
   buildStartupFailureSummary,
+  validateModelPreflight,
   resolveEffectiveAgentParams,
   runningSubagents,
   formatElapsed,
@@ -1685,8 +1728,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         // Unknown agent names used to silently launch with no defaults at all
         // (no model, no deny-tools, no system prompt). Fail the tool call
         // before any surface is created.
-        if (params.agent && !loadAgentDefaults(params.agent, resolveExplicitCwd(params.cwd))) {
-          const searched = agentDefinitionSearchPaths(params.agent, resolveExplicitCwd(params.cwd));
+        const explicitCwd = resolveExplicitCwd(params.cwd);
+        const agentDefs = params.agent ? loadAgentDefaults(params.agent, explicitCwd) : null;
+        if (params.agent && !agentDefs) {
+          const searched = agentDefinitionSearchPaths(params.agent, explicitCwd);
           return {
             content: [
               {
@@ -1698,6 +1743,24 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             ],
             details: { error: "unknown agent" },
           };
+        }
+
+        // Model preflight: fail instantly on models pi does not know instead
+        // of paying for a spawn that dies seconds later with a provider 400.
+        // Claude-CLI agents resolve models outside pi's registry — skip them.
+        const modelRegistry = (ctx as any).modelRegistry;
+        if (agentDefs?.cli !== "claude" && modelRegistry) {
+          const settings = params.agent ? loadAgentSettings(params.agent) : null;
+          const { model: effectiveModel } = resolveEffectiveAgentParams(params, settings, agentDefs);
+          if (effectiveModel) {
+            const modelError = validateModelPreflight(effectiveModel, modelRegistry);
+            if (modelError) {
+              return {
+                content: [{ type: "text", text: modelError }],
+                details: { error: "unknown model" },
+              };
+            }
+          }
         }
 
         // Validate prerequisites
