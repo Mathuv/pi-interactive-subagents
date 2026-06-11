@@ -448,13 +448,20 @@ function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
 function resolveResultPresentation(
   result: Pick<
     SubagentResult,
-    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage"
+    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage" | "sessionFileExists"
   >,
   name: string,
 ): string {
-  const sessionRef = result.sessionFile
-    ? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
-    : "";
+  // A Session/Resume footer pointing at a file that was never created sends
+  // the orchestrator chasing a session that does not exist (June-4 incident:
+  // four planner retries burned on a wrong theory). Only offer resume when
+  // the session file is actually there.
+  const sessionRef =
+    result.sessionFile && result.sessionFileExists !== false
+      ? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
+      : result.sessionFile
+        ? "\n\nNo session file was created — the process died before pi started the session."
+        : "";
 
   if (result.errorMessage) {
     // Auto-retry exhausted or other agent-loop error. The subagent did not
@@ -476,6 +483,22 @@ function resolveResultPresentation(
 }
 
 /**
+ * Summary for a subagent process that died before pi created its session file.
+ * The only diagnostics in that case are on the terminal screen (e.g. extension
+ * load conflicts printed to stderr), so surface them instead of a bare exit code.
+ */
+function buildStartupFailureSummary(screenOutput: string, exitCode: number): string {
+  const output = screenOutput
+    .split("\n")
+    .filter((line) => !/__SUBAGENT_DONE_\d+__/.test(line))
+    .join("\n")
+    .trim();
+  return output
+    ? `Sub-agent process failed to start (exit ${exitCode}). Terminal output:\n\n${output}`
+    : `Sub-agent process failed to start (exit ${exitCode}). No terminal output was captured.`;
+}
+
+/**
  * Result from running a single subagent.
  */
 interface SubagentResult {
@@ -483,6 +506,8 @@ interface SubagentResult {
   task: string;
   summary: string;
   sessionFile?: string;
+  /** Whether sessionFile existed when the result was produced (false = never created). */
+  sessionFileExists?: boolean;
   claudeSessionId?: string;
   exitCode: number;
   elapsed: number;
@@ -1098,6 +1123,7 @@ export const __test__ = {
   loadAgentSettingsFile,
   loadAgentSettings,
   reloadAgentSettingsForTest,
+  buildStartupFailureSummary,
   resolveEffectiveAgentParams,
   runningSubagents,
   formatElapsed,
@@ -1497,8 +1523,9 @@ async function watchSubagent(
     }
 
     // Pi subagent result extraction
+    const sessionFileExists = existsSync(sessionFile);
     let summary: string;
-    if (existsSync(sessionFile)) {
+    if (sessionFileExists) {
       const allEntries = getNewEntries(sessionFile, 0);
       summary =
         findLastAssistantMessage(allEntries) ??
@@ -1507,12 +1534,14 @@ async function watchSubagent(
           : result.exitCode !== 0
             ? `Sub-agent exited with code ${result.exitCode}`
             : "Sub-agent exited without output");
+    } else if (result.errorMessage) {
+      summary = `Subagent error: ${result.errorMessage}`;
+    } else if (result.exitCode !== 0) {
+      // The process died before pi created the session file: capture the
+      // terminal screen (startup stderr) before closeSurface() destroys it.
+      summary = buildStartupFailureSummary(readScreen(surface, 100), result.exitCode);
     } else {
-      summary = result.errorMessage
-        ? `Subagent error: ${result.errorMessage}`
-        : result.exitCode !== 0
-          ? `Sub-agent exited with code ${result.exitCode}`
-          : "Sub-agent exited without output";
+      summary = "Sub-agent exited without output";
     }
 
     closeSurface(surface);
@@ -1523,6 +1552,7 @@ async function watchSubagent(
       task,
       summary,
       sessionFile,
+      sessionFileExists,
       exitCode: result.exitCode,
       elapsed,
       ping: result.ping,
@@ -1543,6 +1573,7 @@ async function watchSubagent(
         elapsed: Math.floor((Date.now() - startTime) / 1000),
         error: "cancelled",
         sessionFile,
+        sessionFileExists: existsSync(sessionFile),
       };
     }
     return {

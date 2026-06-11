@@ -2100,6 +2100,64 @@ describe("subagent interruption", () => {
   });
 });
 
+describe("startup failure reporting", () => {
+  it("omits the Resume footer and notes no session file was created", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const presentation = testApi.resolveResultPresentation(
+      {
+        exitCode: 1,
+        elapsed: 4,
+        summary: "Sub-agent process failed to start (exit 1).",
+        sessionFile: "/tmp/never-created.jsonl",
+        sessionFileExists: false,
+      },
+      "Planner",
+    );
+
+    assert.match(presentation, /failed \(exit code 1\)/);
+    assert.match(presentation, /No session file was created/);
+    assert.doesNotMatch(presentation, /Resume: pi --session/);
+    assert.doesNotMatch(presentation, /Session: /);
+  });
+
+  it("keeps the Resume footer when the session file exists", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const presentation = testApi.resolveResultPresentation(
+      {
+        exitCode: 1,
+        elapsed: 30,
+        summary: "Sub-agent exited with code 1",
+        sessionFile: "/tmp/subagent.jsonl",
+        sessionFileExists: true,
+      },
+      "Worker",
+    );
+
+    assert.match(presentation, /Resume: pi --session \/tmp\/subagent\.jsonl/);
+    assert.doesNotMatch(presentation, /No session file was created/);
+  });
+
+  it("buildStartupFailureSummary strips sentinel lines and keeps terminal output", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const summary = testApi.buildStartupFailureSummary(
+      'Error: Failed to load extension "/x/dup.ts": Tool "subagent" conflicts\n__SUBAGENT_DONE_3__\n',
+      1,
+    );
+
+    assert.match(summary, /failed to start \(exit 1\)/);
+    assert.match(summary, /Tool "subagent" conflicts/);
+    assert.doesNotMatch(summary, /__SUBAGENT_DONE_/);
+  });
+
+  it("buildStartupFailureSummary notes when no terminal output was captured", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const summary = testApi.buildStartupFailureSummary("__SUBAGENT_DONE_2__\n\n", 7);
+
+    assert.match(summary, /failed to start \(exit 7\)/);
+    assert.match(summary, /[Nn]o terminal output/);
+  });
+});
+
 describe("subagent status renderer", () => {
   function createTheme() {
     return {
