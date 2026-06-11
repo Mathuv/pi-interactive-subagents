@@ -149,7 +149,10 @@ export function parseStatusConfig(rawConfig: unknown, source = "config.json"): S
   };
 }
 
-function readStatusConfigFile(configPath: string, examplePath: string): { sourcePath: string; rawConfig: string } {
+function readStatusConfigFile(
+  configPath: string,
+  examplePath: string,
+): { sourcePath: string; rawConfig: string } | null {
   try {
     return { sourcePath: configPath, rawConfig: readFileSync(configPath, "utf8") };
   } catch (error) {
@@ -161,11 +164,7 @@ function readStatusConfigFile(configPath: string, examplePath: string): { source
     return { sourcePath: examplePath, rawConfig: readFileSync(examplePath, "utf8") };
   } catch (error) {
     const errno = error as NodeJS.ErrnoException;
-    if (errno.code === "ENOENT") {
-      throw new Error(
-        `Missing subagent status config. Expected ${configPath} or ${examplePath}.`,
-      );
-    }
+    if (errno.code === "ENOENT") return null;
     throw error;
   }
 }
@@ -174,7 +173,14 @@ export function loadStatusConfig(
   configPath = DEFAULT_STATUS_CONFIG_PATH,
   examplePath = STATUS_CONFIG_EXAMPLE_PATH,
 ): StatusConfig {
-  const { sourcePath, rawConfig } = readStatusConfigFile(configPath, examplePath);
+  const found = readStatusConfigFile(configPath, examplePath);
+  if (!found) {
+    // loadStatusConfig() runs at module import; throwing here would make pi
+    // exit 1 at startup. A packaging that ships neither config file just
+    // disables the status feature.
+    return { enabled: false, lineLimit: DEFAULT_STATUS_LINE_LIMIT };
+  }
+  const { sourcePath, rawConfig } = found;
 
   let parsed: unknown;
   try {

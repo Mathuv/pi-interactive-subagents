@@ -526,12 +526,16 @@ describe("status.ts", () => {
     );
   });
 
-  it("reports when neither local nor shared config exists", () => {
+  it("disables status when neither local nor shared config exists", () => {
+    // A packaging that drops config.json.example must not make the module
+    // import throw (pi would exit 1 at startup). Degrade to disabled instead.
     withTempDir((dir) => {
-      assert.throws(
-        () => loadStatusConfig(join(dir, "config.json"), join(dir, "config.json.example")),
-        /Missing subagent status config\. Expected .*config\.json.*or.*config\.json\.example/,
+      const config = loadStatusConfig(
+        join(dir, "config.json"),
+        join(dir, "config.json.example"),
       );
+
+      assert.deepEqual(config, { enabled: false, lineLimit: 4 });
     });
   });
 
@@ -2216,6 +2220,66 @@ describe("startup failure reporting", () => {
 
     assert.match(summary, /failed to start \(exit 7\)/);
     assert.match(summary, /[Nn]o terminal output/);
+  });
+});
+
+describe("cancelled subagent presentation", () => {
+  it("presents cancellation as cancelled, not failed", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const presentation = testApi.resolveResultPresentation(
+      {
+        exitCode: 1,
+        elapsed: 65,
+        summary: "Subagent cancelled.",
+        sessionFile: "/tmp/subagent.jsonl",
+        sessionFileExists: true,
+        error: "cancelled",
+      },
+      "Worker",
+    );
+
+    assert.match(presentation, /Sub-agent "Worker" cancelled after 1m 5s\./);
+    assert.doesNotMatch(presentation, /failed/);
+    assert.match(presentation, /Resume: pi --session/);
+  });
+
+  it("renders cancelled results with neutral, non-error styling", () => {
+    const { api, registeredMessageRenderers } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const entry = registeredMessageRenderers.find((e) => e.name === "subagent_result");
+    assert.ok(entry, "expected subagent_result renderer to be registered");
+
+    const bgColors: string[] = [];
+    const theme = {
+      fg(_color: string, text: string) {
+        return text;
+      },
+      bg(color: string, text: string) {
+        bgColors.push(color);
+        return text;
+      },
+      bold(text: string) {
+        return text;
+      },
+    };
+
+    const rendered = entry.renderer(
+      {
+        customType: "subagent_result",
+        content: 'Sub-agent "Worker" cancelled after 1m 5s.',
+        details: { name: "Worker", exitCode: 1, elapsed: 65, cancelled: true },
+      },
+      { expanded: true },
+      theme,
+    );
+    const output = rendered.render(80).join("\n");
+
+    assert.match(output, /cancelled/);
+    assert.doesNotMatch(output, /failed/);
+    assert.ok(
+      !bgColors.includes("toolErrorBg"),
+      `expected neutral background, got: ${bgColors.join(", ")}`,
+    );
   });
 });
 

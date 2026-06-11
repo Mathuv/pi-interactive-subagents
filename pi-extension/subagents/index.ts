@@ -463,7 +463,7 @@ function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
 function resolveResultPresentation(
   result: Pick<
     SubagentResult,
-    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage" | "sessionFileExists"
+    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage" | "sessionFileExists" | "error"
   >,
   name: string,
 ): string {
@@ -477,6 +477,12 @@ function resolveResultPresentation(
       : result.sessionFile
         ? "\n\nNo session file was created — the process died before pi started the session."
         : "";
+
+  if (result.error === "cancelled") {
+    // User-initiated cancellation is not a failure; presenting it as
+    // "failed (exit code 1)" misleads the orchestrator into retrying.
+    return `Sub-agent "${name}" cancelled after ${formatElapsed(result.elapsed)}.${sessionRef}`;
+  }
 
   if (result.errorMessage) {
     // Auto-retry exhausted or other agent-loop error. The subagent did not
@@ -1762,6 +1768,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   exitCode: result.exitCode,
                   elapsed: result.elapsed,
                   sessionFile: result.sessionFile,
+                  ...(result.error === "cancelled" ? { cancelled: true } : {}),
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
                   ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
                 },
@@ -2282,19 +2289,26 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const name = details.name ?? "subagent";
         const exitCode = details.exitCode ?? 0;
         const errorMessage = typeof details.errorMessage === "string" ? details.errorMessage : "";
-        const failed = exitCode !== 0 || !!errorMessage;
+        const cancelled = !!details.cancelled;
+        const failed = !cancelled && (exitCode !== 0 || !!errorMessage);
         const elapsed = details.elapsed != null ? formatElapsed(details.elapsed) : "?";
-        const bgFn = failed
-          ? (text: string) => theme.bg("toolErrorBg", text)
-          : (text: string) => theme.bg("toolSuccessBg", text);
-        const icon = failed
-          ? theme.fg("error", "✗")
-          : theme.fg("success", "✓");
-        const status = errorMessage
-          ? "failed (provider/agent error)"
+        const bgFn = cancelled
+          ? (text: string) => theme.bg("customMessageBg", text)
           : failed
-            ? `failed (exit ${exitCode})`
-            : "completed";
+            ? (text: string) => theme.bg("toolErrorBg", text)
+            : (text: string) => theme.bg("toolSuccessBg", text);
+        const icon = cancelled
+          ? theme.fg("muted", "◼")
+          : failed
+            ? theme.fg("error", "✗")
+            : theme.fg("success", "✓");
+        const status = cancelled
+          ? "cancelled"
+          : errorMessage
+            ? "failed (provider/agent error)"
+            : failed
+              ? `failed (exit ${exitCode})`
+              : "completed";
         const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
 
         const header = `${icon} ${theme.fg("toolTitle", theme.bold(name))}${agentTag} ${theme.fg("dim", "—")} ${status} ${theme.fg("dim", `(${elapsed})`)}`;
@@ -2305,6 +2319,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           .replace(/\n\nSession: .+\nResume: .+$/, "")
           .replace(`Sub-agent "${name}" completed (${elapsed}).\n\n`, "")
           .replace(`Sub-agent "${name}" failed (exit code ${exitCode}).\n\n`, "")
+          .replace(`Sub-agent "${name}" cancelled after ${elapsed}.`, "")
           .replace(
             new RegExp(
               `^Sub-agent "${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" failed after ${elapsed} \\(provider/agent error — auto-retry exhausted\\)\\.\\n\\n`,
