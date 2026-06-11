@@ -11,6 +11,15 @@ import { createSubagentActivityRecorder } from "./activity.ts";
 
 export const PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE = "PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE";
 
+// Set while a live copy of this extension owns the subagent_done/caller_ping
+// registrations. pi exits 1 at startup when two extension paths register the
+// same tool, so a second copy loaded from a different path must skip entirely.
+const DONE_REGISTERED_KEY = Symbol.for("pi-subagents/done-registered");
+
+export function resetDoneRegistrationGuardForTest() {
+  (globalThis as any)[DONE_REGISTERED_KEY] = false;
+}
+
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted;
 }
@@ -78,6 +87,12 @@ export function parseDeniedTools(rawValue: string | undefined): string[] {
 }
 
 export default function (pi: ExtensionAPI) {
+  // Another live copy (loaded from a different extension path) already owns the
+  // registrations during this startup — registering again would make pi flag
+  // tool conflicts and exit 1. First copy wins; this copy registers nothing.
+  if ((globalThis as any)[DONE_REGISTERED_KEY]) return;
+  (globalThis as any)[DONE_REGISTERED_KEY] = true;
+
   let toolNames: string[] = [];
   let denied: string[] = [];
   let expanded = false;
@@ -255,6 +270,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", (event) => {
+    // /reload emits session_shutdown before re-importing extensions; release
+    // ownership so the fresh module copy can register again.
+    (globalThis as any)[DONE_REGISTERED_KEY] = false;
     recorder.sessionShutdown((event as any).reason);
   });
 

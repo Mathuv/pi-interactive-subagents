@@ -53,6 +53,7 @@ import subagentDoneInit, {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
   findLatestAssistantError,
+  resetDoneRegistrationGuardForTest,
   PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE,
 } from "../pi-extension/subagents/subagent-done.ts";
 import { __pollForExitTest__ } from "../pi-extension/subagents/cmux.ts";
@@ -80,19 +81,27 @@ function withTempDir(run: (dir: string) => void) {
 }
 
 function createMockExtensionApi() {
+  // A fresh extension API implies a fresh startup: release the registration
+  // ownership sentinels so each test's factory invocation registers normally.
+  (subagentsModule as any).__test__.resetRegistrationGuardForTest();
+  resetDoneRegistrationGuardForTest();
   const registeredTools: Array<any> = [];
   const registeredCommands: Array<any> = [];
   const registeredMessageRenderers: Array<any> = [];
   const sentUserMessages: string[] = [];
   const sentMessages: Array<any> = [];
+  const eventHandlers: Array<{ event: string; handler: Function }> = [];
   return {
     registeredTools,
     registeredCommands,
     registeredMessageRenderers,
     sentUserMessages,
     sentMessages,
+    eventHandlers,
     api: {
-      on() {},
+      on(event: string, handler: Function) {
+        eventHandlers.push({ event, handler });
+      },
       registerTool(tool: any) {
         registeredTools.push(tool);
       },
@@ -1623,6 +1632,64 @@ describe("tool registration", () => {
     const autoExitSchema = resumeTool.parameters.properties.autoExit;
     assert.equal(autoExitSchema.type, "boolean");
     assert.match(autoExitSchema.description, /Defaults to true/);
+  });
+
+  it("second extension copy registers nothing while the first owns registration", () => {
+    const first = createMockExtensionApi();
+    const second = createMockExtensionApi();
+
+    (subagentsModule as any).default(first.api);
+    (subagentsModule as any).default(second.api);
+
+    assert.ok(first.registeredTools.length > 0, "expected first copy to register tools");
+    assert.equal(second.registeredTools.length, 0);
+    assert.equal(second.registeredCommands.length, 0);
+    assert.equal(second.registeredMessageRenderers.length, 0);
+    assert.equal(second.eventHandlers.length, 0);
+  });
+
+  it("session_shutdown releases registration ownership so /reload re-registers", () => {
+    const first = createMockExtensionApi();
+    const second = createMockExtensionApi();
+    const pollAbortKey = Symbol.for("pi-subagents/poll-abort-controller");
+    const originalAbort = (globalThis as any)[pollAbortKey];
+
+    try {
+      (subagentsModule as any).default(first.api);
+      const shutdown = first.eventHandlers.find((h) => h.event === "session_shutdown");
+      assert.ok(shutdown, "expected session_shutdown handler");
+      shutdown!.handler({ type: "session_shutdown", reason: "reload" }, {});
+
+      (subagentsModule as any).default(second.api);
+      assert.ok(second.registeredTools.length > 0, "expected re-registration after shutdown");
+    } finally {
+      // The shutdown handler aborts the module-level poll controller; restore
+      // a live one so later tests using getModuleAbortSignal() are unaffected.
+      (globalThis as any)[pollAbortKey] = originalAbort?.signal?.aborted
+        ? new AbortController()
+        : originalAbort;
+    }
+  });
+
+  it("second subagent-done copy registers nothing while the first owns registration", () => {
+    const first = createMockExtensionApi();
+    const second = createMockExtensionApi();
+
+    subagentDoneInit(first.api);
+    subagentDoneInit(second.api);
+
+    assert.ok(first.registeredTools.length > 0, "expected first copy to register tools");
+    assert.equal(second.registeredTools.length, 0);
+    assert.equal(second.registeredCommands.length, 0);
+    assert.equal(second.eventHandlers.length, 0);
+
+    const shutdown = first.eventHandlers.find((h) => h.event === "session_shutdown");
+    assert.ok(shutdown, "expected session_shutdown handler");
+    shutdown!.handler({ type: "session_shutdown", reason: "reload" });
+
+    const third = createMockExtensionApi();
+    subagentDoneInit(third.api);
+    assert.ok(third.registeredTools.length > 0, "expected re-registration after shutdown");
   });
 });
 

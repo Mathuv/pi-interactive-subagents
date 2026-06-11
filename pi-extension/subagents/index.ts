@@ -69,6 +69,10 @@ const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
 const WIDGET_INTERVAL_KEY = Symbol.for("pi-subagents/widget-interval");
 const STATUS_INTERVAL_KEY = Symbol.for("pi-subagents/status-interval");
 const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
+// Set while a live copy of this extension owns the subagent tool registrations.
+// pi exits 1 at startup when two extension paths register the same tool, so a
+// second copy loaded from a different path must skip registration entirely.
+const REGISTERED_KEY = Symbol.for("pi-subagents/registered");
 
 {
   const prevInterval = (globalThis as any)[WIDGET_INTERVAL_KEY];
@@ -88,6 +92,10 @@ const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
 
 function getModuleAbortSignal(): AbortSignal {
   return ((globalThis as any)[POLL_ABORT_KEY] as AbortController).signal;
+}
+
+function resetRegistrationGuardForTest() {
+  (globalThis as any)[REGISTERED_KEY] = false;
 }
 
 const SubagentParams = Type.Object({
@@ -1098,6 +1106,7 @@ export const __test__ = {
   loadAgentSettingsFile,
   loadAgentSettings,
   reloadAgentSettingsForTest,
+  resetRegistrationGuardForTest,
   resolveEffectiveAgentParams,
   runningSubagents,
   formatElapsed,
@@ -1557,6 +1566,12 @@ async function watchSubagent(
 }
 
 export default function subagentsExtension(pi: ExtensionAPI) {
+  // Another live copy (loaded from a different extension path) already owns the
+  // registrations during this startup — registering again would make pi flag
+  // tool conflicts and exit 1. First copy wins; this copy registers nothing.
+  if ((globalThis as any)[REGISTERED_KEY]) return;
+  (globalThis as any)[REGISTERED_KEY] = true;
+
   // Capture the UI context for widget updates
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;
@@ -1564,6 +1579,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
   // Clean up on session shutdown
   pi.on("session_shutdown", (_event, _ctx) => {
+    // /reload emits session_shutdown before re-importing extensions; release
+    // ownership so the fresh module copy can register again.
+    (globalThis as any)[REGISTERED_KEY] = false;
     if (widgetInterval) {
       clearInterval(widgetInterval);
       widgetInterval = null;
