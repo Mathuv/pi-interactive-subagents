@@ -930,6 +930,67 @@ describe("subagent discovery", () => {
     });
   });
 
+  it("loadAgentDefaults finds definitions under an explicit target cwd", async () => {
+    await withIsolatedAgentEnv(async ({ projectDir }) => {
+      const targetDir = join(projectDir, "target-repo");
+      writeAgentFile(
+        join(targetDir, ".pi", "agents"),
+        "cwd-only-test-agent",
+        ["name: cwd-only-test-agent", "model: anthropic/test-cwd-only"].join("\n"),
+      );
+
+      // Invisible from the parent cwd (June-4 bug: silently launched with null defs).
+      assert.equal(testApi.loadAgentDefaults("cwd-only-test-agent"), null);
+
+      const loaded = testApi.loadAgentDefaults("cwd-only-test-agent", targetDir);
+      assert.equal(loaded?.model, "anthropic/test-cwd-only");
+    });
+  });
+
+  it("explicit target cwd definition wins over the parent cwd definition", async () => {
+    await withIsolatedAgentEnv(async ({ projectDir, projectAgentsDir }) => {
+      const targetDir = join(projectDir, "target-repo");
+      writeAgentFile(
+        projectAgentsDir,
+        "shadowed-test-agent",
+        ["name: shadowed-test-agent", "model: anthropic/from-parent"].join("\n"),
+      );
+      writeAgentFile(
+        join(targetDir, ".pi", "agents"),
+        "shadowed-test-agent",
+        ["name: shadowed-test-agent", "model: anthropic/from-target"].join("\n"),
+      );
+
+      const loaded = testApi.loadAgentDefaults("shadowed-test-agent", targetDir);
+      assert.equal(loaded?.model, "anthropic/from-target");
+    });
+  });
+
+  it("subagent tool fails fast for unknown agent names, listing searched paths", async () => {
+    await withIsolatedAgentEnv(async () => {
+      const { api, registeredTools } = createMockExtensionApi();
+      (subagentsModule as any).default(api);
+      const tool = registeredTools.find((t: any) => t.name === "subagent");
+      assert.ok(tool, "expected subagent tool to be registered");
+
+      const result = await tool.execute(
+        "tc1",
+        { name: "X", task: "T", agent: "no-such-test-agent" },
+        undefined,
+        undefined,
+        {},
+      );
+
+      assert.equal(result.details.error, "unknown agent");
+      assert.match(result.content[0].text, /unknown agent "no-such-test-agent"/i);
+      assert.match(
+        result.content[0].text,
+        /\.pi[/\\]agents[/\\]no-such-test-agent\.md/,
+        "expected searched paths to be listed",
+      );
+    });
+  });
+
   it("resolveEffectiveInteractive defaults to the inverse of auto-exit", () => {
     // Autonomous agents (auto-exit: true) are NOT interactive — parent gets stall pings.
     assert.equal(

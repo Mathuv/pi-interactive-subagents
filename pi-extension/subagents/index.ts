@@ -96,7 +96,7 @@ const SubagentParams = Type.Object({
   agent: Type.Optional(
     Type.String({
       description:
-        "Agent name to load defaults from (e.g. 'worker', 'scout', 'reviewer'). Reads ~/.pi/agent/agents/<name>.md for model, tools, skills.",
+        "Agent name to load defaults from (e.g. 'worker', 'scout', 'reviewer'). Searches <cwd param>/.pi/agents/<name>.md first (when cwd is set), then ./.pi/agents/, ~/.pi/agent/agents/, and the bundled agents. Unknown names fail the call.",
     }),
   ),
   systemPrompt: Type.Optional(
@@ -365,15 +365,30 @@ function resolveEffectiveInteractive(
   return !(agentDefs?.autoExit ?? false);
 }
 
-function loadAgentDefaults(agentName: string): AgentDefaults | null {
-  const configDir = getAgentConfigDir();
-  const paths = [
-    join(process.cwd(), ".pi", "agents", `${agentName}.md`),
-    join(configDir, "agents", `${agentName}.md`),
-    join(getBundledAgentsDir(), `${agentName}.md`),
-  ];
+/**
+ * Resolve the `cwd` tool param to an absolute path (same rule as
+ * resolveSubagentPaths uses for explicit params: relative paths are based on
+ * the parent's process.cwd()). Deliberately ignores agentDefs.cwd — defaults
+ * cannot exist yet while we are still discovering the agent definition.
+ */
+function resolveExplicitCwd(rawCwd: string | undefined): string | null {
+  if (!rawCwd) return null;
+  return rawCwd.startsWith("/") ? rawCwd : join(process.cwd(), rawCwd);
+}
 
-  for (const p of paths) {
+function agentDefinitionSearchPaths(agentName: string, explicitCwd?: string | null): string[] {
+  const paths: string[] = [];
+  if (explicitCwd) paths.push(join(explicitCwd, ".pi", "agents", `${agentName}.md`));
+  paths.push(
+    join(process.cwd(), ".pi", "agents", `${agentName}.md`),
+    join(getAgentConfigDir(), "agents", `${agentName}.md`),
+    join(getBundledAgentsDir(), `${agentName}.md`),
+  );
+  return paths;
+}
+
+function loadAgentDefaults(agentName: string, explicitCwd?: string | null): AgentDefaults | null {
+  for (const p of agentDefinitionSearchPaths(agentName, explicitCwd)) {
     if (!existsSync(p)) continue;
     const parsed = parseAgentDefinition(readFileSync(p, "utf8"), agentName);
     if (parsed) return parsed;
@@ -1152,7 +1167,9 @@ async function launchSubagent(
   const startTime = Date.now();
   const id = Math.random().toString(16).slice(2, 10);
 
-  const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null;
+  const agentDefs = params.agent
+    ? loadAgentDefaults(params.agent, resolveExplicitCwd(params.cwd))
+    : null;
   const settings = params.agent ? loadAgentSettings(params.agent) : null;
   const { model: effectiveModel, thinking: effectiveThinking, tools: effectiveTools, skills: effectiveSkills } =
     resolveEffectiveAgentParams(params, settings, agentDefs);
@@ -1659,6 +1676,24 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           };
         }
 
+        // Unknown agent names used to silently launch with no defaults at all
+        // (no model, no deny-tools, no system prompt). Fail the tool call
+        // before any surface is created.
+        if (params.agent && !loadAgentDefaults(params.agent, resolveExplicitCwd(params.cwd))) {
+          const searched = agentDefinitionSearchPaths(params.agent, resolveExplicitCwd(params.cwd));
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `Error: unknown agent "${params.agent}" — no definition found. Searched:\n` +
+                  searched.map((p) => `- ${p}`).join("\n"),
+              },
+            ],
+            details: { error: "unknown agent" },
+          };
+        }
+
         // Validate prerequisites
         if (!isMuxAvailable()) {
           return muxUnavailableResult();
@@ -1887,11 +1922,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       description:
         "List all available subagent definitions. " +
         "Scans project-local .pi/agents/ and global ~/.pi/agent/agents/. " +
-        "Project-local agents override global ones with the same name.",
+        "Project-local agents override global ones with the same name. " +
+        "When spawning with a cwd, the target's <cwd>/.pi/agents/ is searched first.",
       promptSnippet:
         "List all available subagent definitions. " +
         "Scans project-local .pi/agents/ and global ~/.pi/agent/agents/. " +
-        "Project-local agents override global ones with the same name.",
+        "Project-local agents override global ones with the same name. " +
+        "When spawning with a cwd, the target's <cwd>/.pi/agents/ is searched first.",
       parameters: Type.Object({}),
 
       async execute() {
