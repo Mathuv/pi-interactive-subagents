@@ -2231,6 +2231,8 @@ describe("model preflight", () => {
       { provider: "anthropic", id: "claude-sonnet-4-6" },
       { provider: "openai-codex", id: "gpt-5.4" },
       { provider: "opencode-go", id: "deepseek-v4-flash" },
+      { provider: "amazon-bedrock", id: "amazon.nova-lite-v1:0" },
+      { provider: "openrouter", id: "moonshotai/kimi-k2.5:exacto" },
     ];
     return {
       find(provider: string, modelId: string) {
@@ -2242,12 +2244,46 @@ describe("model preflight", () => {
     };
   }
 
-  it("accepts known models, with and without a :thinking suffix", () => {
+  it("accepts known models", () => {
+    assert.equal(testApi.validateModelPreflight("openai-codex/gpt-5.4", stubRegistry()), null);
+  });
+
+  it("accepts models with colons in their ids", () => {
     assert.equal(
-      testApi.validateModelPreflight("anthropic/claude-sonnet-4-6:thinking", stubRegistry()),
+      testApi.validateModelPreflight("amazon-bedrock/amazon.nova-lite-v1:0", stubRegistry()),
       null,
     );
-    assert.equal(testApi.validateModelPreflight("openai-codex/gpt-5.4", stubRegistry()), null);
+    assert.equal(
+      testApi.validateModelPreflight("openrouter/moonshotai/kimi-k2.5:exacto", stubRegistry()),
+      null,
+    );
+  });
+
+  it("accepts colon-id models with a trailing thinking level", () => {
+    assert.equal(
+      testApi.validateModelPreflight("amazon-bedrock/amazon.nova-lite-v1:0:high", stubRegistry()),
+      null,
+    );
+  });
+
+  it("accepts all valid thinking level suffixes", () => {
+    for (const level of ["off", "minimal", "low", "medium", "high", "xhigh"]) {
+      assert.equal(
+        testApi.validateModelPreflight(`anthropic/claude-sonnet-4-6:${level}`, stubRegistry()),
+        null,
+      );
+    }
+  });
+
+  it("rejects literal :thinking — not a valid pi thinking level", () => {
+    const error = testApi.validateModelPreflight(
+      "anthropic/claude-sonnet-4-6:thinking",
+      stubRegistry(),
+    );
+
+    assert.ok(error, "expected a validation error");
+    assert.match(error, /anthropic\/claude-sonnet-4-6:thinking/);
+    assert.match(error, /anthropic\/claude-sonnet-4-6/);
   });
 
   it("rejects unknown models and suggests the provider's models", () => {
@@ -2257,6 +2293,14 @@ describe("model preflight", () => {
 
     assert.ok(error, "expected a validation error");
     assert.match(error, /openai-codex\/gpt-5\.3-codex/);
+    assert.match(error, /openai-codex\/gpt-5\.4/);
+  });
+
+  it("rejects unknown models even with a valid thinking suffix", () => {
+    const error = testApi.validateModelPreflight("openai-codex/gpt-5.3-codex:high", stubRegistry());
+
+    assert.ok(error, "expected a validation error");
+    assert.match(error, /openai-codex\/gpt-5\.3-codex:high/);
     assert.match(error, /openai-codex\/gpt-5\.4/);
   });
 

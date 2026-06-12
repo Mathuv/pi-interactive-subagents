@@ -511,6 +511,8 @@ function resolveResultPresentation(
  *
  * Returns null when valid, otherwise a user-facing error message.
  */
+const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+
 function validateModelPreflight(
   effectiveModel: string,
   registry: {
@@ -518,12 +520,25 @@ function validateModelPreflight(
     getAll(): Array<{ provider: string; id: string }>;
   },
 ): string | null {
-  const base = effectiveModel.split(":")[0]; // strip :thinking suffix
+  const registryHas = (candidate: string): boolean => {
+    const slash = candidate.indexOf("/");
+    if (slash === -1) return false;
+    return !!registry.find(candidate.slice(0, slash), candidate.slice(slash + 1));
+  };
+
+  // Mirrors dist/core/model-resolver.js parseModelPattern, strict CLI --model semantics.
+  let base = effectiveModel;
+  for (;;) {
+    if (registryHas(base)) return null;
+    const lastColon = base.lastIndexOf(":");
+    if (lastColon === -1) break;
+    if (!VALID_THINKING_LEVELS.has(base.slice(lastColon + 1))) break;
+    base = base.slice(0, lastColon);
+  }
+
   const slash = base.indexOf("/");
   const provider = slash === -1 ? "" : base.slice(0, slash);
   const modelId = slash === -1 ? base : base.slice(slash + 1);
-
-  if (provider && registry.find(provider, modelId)) return null;
 
   const all = registry.getAll();
   const sameProvider = provider ? all.filter((m) => m.provider === provider) : [];
