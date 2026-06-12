@@ -1764,7 +1764,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         // of paying for a spawn that dies seconds later with a provider 400.
         // Claude-CLI agents resolve models outside pi's registry — skip them.
         const modelRegistry = (ctx as any).modelRegistry;
-        if (agentDefs?.cli !== "claude" && modelRegistry) {
+        const { localAgentDir } = resolveSubagentPaths(params, agentDefs);
+        const usesLocalAgentDir = !!(localAgentDir && existsSync(localAgentDir));
+        // Child resolves against <cwd>/.pi/agent/models.json; parent registry is the wrong oracle.
+        if (agentDefs?.cli !== "claude" && modelRegistry && !usesLocalAgentDir) {
           const settings = params.agent ? loadAgentSettings(params.agent) : null;
           const { model: effectiveModel } = resolveEffectiveAgentParams(params, settings, agentDefs);
           if (effectiveModel) {

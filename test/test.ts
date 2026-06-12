@@ -2329,6 +2329,57 @@ describe("model preflight", () => {
     assert.equal(result.details.error, "unknown model");
     assert.match(result.content[0].text, /nonexistent\/foo/);
   });
+
+  it("skips model preflight when target cwd has its own .pi/agent dir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "subagent-local-agent-"));
+    try {
+      mkdirSync(join(dir, ".pi", "agent"), { recursive: true });
+      const { api, registeredTools } = createMockExtensionApi();
+      (subagentsModule as any).default(api);
+      const tool = registeredTools.find((t: any) => t.name === "subagent");
+      assert.ok(tool, "expected subagent tool to be registered");
+
+      const result = await tool.execute(
+        "tc1",
+        { name: "X", task: "T", model: "childonly/some-model", cwd: dir },
+        undefined,
+        undefined,
+        {
+          modelRegistry: stubRegistry(),
+          sessionManager: { getSessionFile: () => null },
+        },
+      );
+
+      assert.notEqual(result.details?.error, "unknown model");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still preflights when target cwd has no local agent dir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "subagent-no-local-agent-"));
+    try {
+      const { api, registeredTools } = createMockExtensionApi();
+      (subagentsModule as any).default(api);
+      const tool = registeredTools.find((t: any) => t.name === "subagent");
+      assert.ok(tool, "expected subagent tool to be registered");
+
+      const result = await tool.execute(
+        "tc1",
+        { name: "X", task: "T", model: "childonly/some-model", cwd: dir },
+        undefined,
+        undefined,
+        {
+          modelRegistry: stubRegistry(),
+          sessionManager: { getSessionFile: () => null },
+        },
+      );
+
+      assert.equal(result.details.error, "unknown model");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("cancelled subagent presentation", () => {
