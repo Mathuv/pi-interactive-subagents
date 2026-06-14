@@ -70,6 +70,38 @@ export function findLatestAssistantError(
   return null;
 }
 
+export type SubagentDoneStatus = "success" | "partial" | "blocked";
+
+export interface SubagentArtifact {
+  path: string;
+  description?: string;
+}
+
+export interface SubagentDonePayload {
+  type: "done";
+  summary?: string;
+  status?: SubagentDoneStatus;
+  artifacts?: SubagentArtifact[];
+}
+
+/**
+ * Build the `.exit` sidecar payload for subagent_done. All fields are optional
+ * so a bare `subagent_done()` keeps writing `{ type: "done" }` — the live
+ * contract every existing agent relies on. Empty summary / empty artifacts are
+ * omitted so the watcher's fallback chain stays in control.
+ */
+export function buildDonePayload(params: {
+  summary?: string;
+  status?: SubagentDoneStatus;
+  artifacts?: SubagentArtifact[];
+}): SubagentDonePayload {
+  const payload: SubagentDonePayload = { type: "done" };
+  if (params.summary) payload.summary = params.summary;
+  if (params.status) payload.status = params.status;
+  if (params.artifacts && params.artifacts.length > 0) payload.artifacts = params.artifacts;
+  return payload;
+}
+
 export function parseDeniedTools(rawValue: string | undefined): string[] {
   return (rawValue ?? "")
     .split(",")
@@ -308,13 +340,34 @@ export default function (pi: ExtensionAPI) {
     description:
       "Call this tool when you have completed your task. " +
       "It will close this session and return your results to the main session. " +
-      "Your LAST assistant message before calling this becomes the summary returned to the caller.",
-    parameters: Type.Object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      "Pass `summary` (a concise result for the caller) and, when you produced files, " +
+      "`artifacts` (their paths). Optionally set `status` to partial or blocked when the " +
+      "task was not fully completed. If you omit summary, your last assistant message is " +
+      "used as the summary instead.",
+    parameters: Type.Object({
+      summary: Type.Optional(
+        Type.String({ description: "Concise result summary returned to the caller" }),
+      ),
+      status: Type.Optional(
+        Type.Union([Type.Literal("success"), Type.Literal("partial"), Type.Literal("blocked")], {
+          description: "Completion status; omit for a normal successful run",
+        }),
+      ),
+      artifacts: Type.Optional(
+        Type.Array(
+          Type.Object({
+            path: Type.String(),
+            description: Type.Optional(Type.String()),
+          }),
+          { description: "Files you produced, so the caller can read them directly" },
+        ),
+      ),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const sessionFile = process.env.PI_SUBAGENT_SESSION;
       recorder.subagentDone();
       if (sessionFile) {
-        writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "done" }));
+        writeFileSync(`${sessionFile}.exit`, JSON.stringify(buildDonePayload(params)));
       }
       ctx.shutdown();
       return {

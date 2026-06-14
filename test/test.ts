@@ -53,6 +53,7 @@ import subagentDoneInit, {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
   findLatestAssistantError,
+  buildDonePayload,
   PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE,
 } from "../pi-extension/subagents/subagent-done.ts";
 import { __pollForExitTest__ } from "../pi-extension/subagents/cmux.ts";
@@ -1446,6 +1447,48 @@ describe("subagent-done.ts", () => {
       // failure detail; staying open would just strand the worker.
       const messages = [{ role: "assistant", stopReason: "error", errorMessage: "529 overloaded" }];
       assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
+    });
+  });
+
+  describe("buildDonePayload", () => {
+    it("writes a bare done sidecar when no fields are provided", () => {
+      assert.deepEqual(buildDonePayload({}), { type: "done" });
+    });
+
+    it("includes a full payload with summary, status, and artifacts", () => {
+      assert.deepEqual(
+        buildDonePayload({
+          summary: "Reviewed the pricing module.",
+          status: "partial",
+          artifacts: [
+            { path: ".pi/plans/review.md", description: "Full review" },
+            { path: "notes.md" },
+          ],
+        }),
+        {
+          type: "done",
+          summary: "Reviewed the pricing module.",
+          status: "partial",
+          artifacts: [
+            { path: ".pi/plans/review.md", description: "Full review" },
+            { path: "notes.md" },
+          ],
+        },
+      );
+    });
+
+    it("omits artifacts and status when only a summary is given", () => {
+      assert.deepEqual(buildDonePayload({ summary: "Done." }), {
+        type: "done",
+        summary: "Done.",
+      });
+    });
+
+    it("omits an empty artifacts array", () => {
+      assert.deepEqual(buildDonePayload({ summary: "x", artifacts: [] }), {
+        type: "done",
+        summary: "x",
+      });
     });
   });
 
