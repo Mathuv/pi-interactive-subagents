@@ -34,6 +34,8 @@ Phase 5: Execute Todos (workers — receive plan + scout context)
 Phase 6: Review
 ```
 
+> **Wait discipline.** When a subagent's result gates your next step (scout → planner, planner → workers), stop and wait for it — do not redo its work in the parent session. Results steer back to you automatically when the subagent finishes; spending expensive parent tokens re-deriving what a scout or planner is already producing just duplicates effort. Parallelise only genuinely independent work.
+
 ---
 
 ## Phase 1: Quick Assessment
@@ -77,7 +79,7 @@ Save your findings to: .pi/plans/YYYY-MM-DD-<name>/scout-context.md`,
 });
 ```
 
-**Wait for the scout to finish.** Read the scout's context file with the `read` tool — you'll pass it to the planner.
+**Wait for the scout to finish — don't start planning in the parent meanwhile.** Its result steers back automatically. Read the scout's context file with the `read` tool — you'll pass it to the planner.
 
 The planner can spawn **additional** scouts or researchers mid-session if it hits a factual gap. That's expected — don't try to pre-scout every possible area.
 
@@ -104,7 +106,7 @@ For every todo, prefix the title with [tdd] for behavior-changing work (features
 });
 ```
 
-**The user works with the planner.** It will clarify requirements lightly (1-2 rounds of questions, not a deep spec session), propose approaches, validate the design, run a premortem, write the plan, and create todos with mandatory code examples.
+**The user works with the planner — wait for it; don't draft the plan in parallel in the parent.** Its plan + todos steer back automatically when the session closes. It will clarify requirements lightly (1-2 rounds of questions, not a deep spec session), propose approaches, validate the design, run a premortem, write the plan, and create todos with mandatory code examples.
 
 When done, the user presses Ctrl+D and the plan + todos are returned to the main session.
 
