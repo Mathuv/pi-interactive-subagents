@@ -1224,7 +1224,15 @@ export interface PollResult {
   ping?: { name: string; message: string };
   /** Error message if reason is "error" (auto-retry exhausted, provider overload, etc.) */
   errorMessage?: string;
+  /** Summary from a structured subagent_done payload, when the agent supplied one. */
+  summary?: string;
+  /** Completion status from a structured subagent_done payload. */
+  status?: "success" | "partial" | "blocked";
+  /** Artifact paths the agent reported via subagent_done. */
+  artifacts?: Array<{ path: string; description?: string }>;
 }
+
+const DONE_STATUSES = new Set(["success", "partial", "blocked"]);
 
 /**
  * Interpret an `.exit` sidecar payload (written by subagent_done / caller_ping /
@@ -1246,7 +1254,17 @@ function interpretExitSidecar(data: any): PollResult {
         : "Subagent exited with stopReason=error (no errorMessage in sidecar).";
     return { reason: "error", exitCode: 1, errorMessage };
   }
-  return { reason: "done", exitCode: 0 };
+  const done: PollResult = { reason: "done", exitCode: 0 };
+  if (typeof data?.summary === "string" && data.summary.trim() !== "") {
+    done.summary = data.summary;
+  }
+  if (typeof data?.status === "string" && DONE_STATUSES.has(data.status)) {
+    done.status = data.status as PollResult["status"];
+  }
+  if (Array.isArray(data?.artifacts) && data.artifacts.length > 0) {
+    done.artifacts = data.artifacts;
+  }
+  return done;
 }
 
 export const __pollForExitTest__ = { interpretExitSidecar };

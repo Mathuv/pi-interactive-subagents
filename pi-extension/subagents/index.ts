@@ -460,10 +460,41 @@ function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
   return ` stalled${detail}${duration} `;
 }
 
+/**
+ * Pick the summary for a pi subagent result. A structured subagent_done payload
+ * summary (B1) wins; otherwise fall back to the last assistant message; finally
+ * the caller-supplied terminal fallback (error / exit-code strings). A blank
+ * payload summary is treated as absent so it never shadows real output.
+ */
+function selectSubagentSummary(
+  payloadSummary: string | undefined,
+  lastAssistantMessage: string | null,
+  fallback: string,
+): string {
+  if (payloadSummary && payloadSummary.trim() !== "") return payloadSummary;
+  if (lastAssistantMessage && lastAssistantMessage.trim() !== "") return lastAssistantMessage;
+  return fallback;
+}
+
+/** Format reported artifacts as a block appended to a result presentation. */
+function formatArtifactBlock(artifacts: SubagentResult["artifacts"]): string {
+  if (!artifacts || artifacts.length === 0) return "";
+  const lines = artifacts.map((a) => (a.description ? `- ${a.path} — ${a.description}` : `- ${a.path}`));
+  return `\n\nArtifacts:\n${lines.join("\n")}`;
+}
+
 function resolveResultPresentation(
   result: Pick<
     SubagentResult,
-    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage" | "sessionFileExists" | "error"
+    | "exitCode"
+    | "elapsed"
+    | "summary"
+    | "sessionFile"
+    | "errorMessage"
+    | "sessionFileExists"
+    | "error"
+    | "status"
+    | "artifacts"
   >,
   name: string,
 ): string {
@@ -498,9 +529,18 @@ function resolveResultPresentation(
     );
   }
 
-  return result.exitCode !== 0
-    ? `Sub-agent "${name}" failed (exit code ${result.exitCode}).\n\n${result.summary}${sessionRef}`
-    : `Sub-agent "${name}" completed (${formatElapsed(result.elapsed)}).\n\n${result.summary}${sessionRef}`;
+  if (result.exitCode !== 0) {
+    return `Sub-agent "${name}" failed (exit code ${result.exitCode}).\n\n${result.summary}${sessionRef}`;
+  }
+
+  const elapsed = formatElapsed(result.elapsed);
+  const headline =
+    result.status === "blocked"
+      ? `Sub-agent "${name}" blocked after ${elapsed}.`
+      : result.status === "partial"
+        ? `Sub-agent "${name}" partially completed (${elapsed}).`
+        : `Sub-agent "${name}" completed (${elapsed}).`;
+  return `${headline}\n\n${result.summary}${formatArtifactBlock(result.artifacts)}${sessionRef}`;
 }
 
 /**
@@ -593,6 +633,12 @@ interface SubagentResult {
   /** Provider/agent error message when auto-retry exhausted (overload, rate limit, etc.). */
   errorMessage?: string;
   ping?: { name: string; message: string };
+  /** Raw summary from the subagent_done payload (before fallback resolution). */
+  donePayloadSummary?: string;
+  /** Completion status from a structured subagent_done payload. */
+  status?: "success" | "partial" | "blocked";
+  /** Artifacts the subagent reported via subagent_done. */
+  artifacts?: Array<{ path: string; description?: string }>;
 }
 
 /**
@@ -1197,6 +1243,7 @@ export const __test__ = {
   requestSubagentInterrupt,
   handleSubagentInterrupt,
   resolveResultPresentation,
+  selectSubagentSummary,
   resolveResumeLaunchBehavior,
   loadAgentSettingsFile,
   loadAgentSettings,
@@ -1608,13 +1655,15 @@ async function watchSubagent(
     let summary: string;
     if (sessionFileExists) {
       const allEntries = getNewEntries(sessionFile, 0);
-      summary =
-        findLastAssistantMessage(allEntries) ??
-        (result.errorMessage
-          ? `Subagent error: ${result.errorMessage}`
-          : result.exitCode !== 0
-            ? `Sub-agent exited with code ${result.exitCode}`
-            : "Sub-agent exited without output");
+      const fallback = result.errorMessage
+        ? `Subagent error: ${result.errorMessage}`
+        : result.exitCode !== 0
+          ? `Sub-agent exited with code ${result.exitCode}`
+          : "Sub-agent exited without output";
+      // Structured subagent_done summary (B1) wins, then last assistant text.
+      summary = selectSubagentSummary(result.summary, findLastAssistantMessage(allEntries), fallback);
+    } else if (result.summary && result.summary.trim() !== "") {
+      summary = result.summary;
     } else if (result.errorMessage) {
       summary = `Subagent error: ${result.errorMessage}`;
     } else if (result.exitCode !== 0) {
@@ -1637,6 +1686,9 @@ async function watchSubagent(
       exitCode: result.exitCode,
       elapsed,
       ping: result.ping,
+      ...(result.summary ? { donePayloadSummary: result.summary } : {}),
+      ...(result.status ? { status: result.status } : {}),
+      ...(result.artifacts ? { artifacts: result.artifacts } : {}),
       ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
     };
   } catch (err: any) {
@@ -1850,6 +1902,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: result.sessionFile,
                   ...(result.error === "cancelled" ? { cancelled: true } : {}),
+                  ...(result.status ? { status: result.status } : {}),
+                  ...(result.artifacts ? { artifacts: result.artifacts } : {}),
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
                   ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
                 },
@@ -2264,12 +2318,17 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             }
 
             const allEntries = getNewEntries(params.sessionPath, entryCountBefore);
-            const summary = findLastAssistantMessage(allEntries) ??
-              (result.errorMessage
-                ? `Subagent error: ${result.errorMessage}`
-                : result.exitCode !== 0
-                  ? `Resumed session exited with code ${result.exitCode}`
-                  : "Resumed session exited without new output");
+            const fallback = result.errorMessage
+              ? `Subagent error: ${result.errorMessage}`
+              : result.exitCode !== 0
+                ? `Resumed session exited with code ${result.exitCode}`
+                : "Resumed session exited without new output";
+            // Structured subagent_done summary (B1) wins, then last assistant text.
+            const summary = selectSubagentSummary(
+              result.donePayloadSummary,
+              findLastAssistantMessage(allEntries),
+              fallback,
+            );
             const presentation = resolveResultPresentation(
               { ...result, summary, sessionFile: params.sessionPath },
               name,
@@ -2286,6 +2345,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   exitCode: result.exitCode,
                   elapsed: result.elapsed,
                   sessionFile: params.sessionPath,
+                  ...(result.status ? { status: result.status } : {}),
+                  ...(result.artifacts ? { artifacts: result.artifacts } : {}),
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
                 },
               },
@@ -2372,8 +2433,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const errorMessage = typeof details.errorMessage === "string" ? details.errorMessage : "";
         const cancelled = !!details.cancelled;
         const failed = !cancelled && (exitCode !== 0 || !!errorMessage);
+        // A clean exit the agent reported as not-fully-done: render distinctly
+        // from a plain success (but it is not a failure).
+        const partial = !cancelled && !failed && details.status === "partial";
+        const blocked = !cancelled && !failed && details.status === "blocked";
         const elapsed = details.elapsed != null ? formatElapsed(details.elapsed) : "?";
-        const bgFn = cancelled
+        const bgFn = cancelled || partial || blocked
           ? (text: string) => theme.bg("customMessageBg", text)
           : failed
             ? (text: string) => theme.bg("toolErrorBg", text)
@@ -2382,14 +2447,22 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           ? theme.fg("muted", "◼")
           : failed
             ? theme.fg("error", "✗")
-            : theme.fg("success", "✓");
+            : blocked
+              ? theme.fg("accent", "⊘")
+              : partial
+                ? theme.fg("accent", "◐")
+                : theme.fg("success", "✓");
         const status = cancelled
           ? "cancelled"
           : errorMessage
             ? "failed (provider/agent error)"
             : failed
               ? `failed (exit ${exitCode})`
-              : "completed";
+              : blocked
+                ? "blocked"
+                : partial
+                  ? "partial"
+                  : "completed";
         const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
 
         const header = `${icon} ${theme.fg("toolTitle", theme.bold(name))}${agentTag} ${theme.fg("dim", "—")} ${status} ${theme.fg("dim", `(${elapsed})`)}`;
@@ -2399,6 +2472,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const summary = rawContent
           .replace(/\n\nSession: .+\nResume: .+$/, "")
           .replace(`Sub-agent "${name}" completed (${elapsed}).\n\n`, "")
+          .replace(`Sub-agent "${name}" partially completed (${elapsed}).\n\n`, "")
+          .replace(`Sub-agent "${name}" blocked after ${elapsed}.\n\n`, "")
           .replace(`Sub-agent "${name}" failed (exit code ${exitCode}).\n\n`, "")
           .replace(`Sub-agent "${name}" cancelled after ${elapsed}.`, "")
           .replace(

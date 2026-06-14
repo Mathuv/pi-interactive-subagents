@@ -1633,6 +1633,31 @@ describe("cmux.ts interpretExitSidecar", () => {
     });
   });
 
+  it("surfaces summary, status, and artifacts from a structured done payload", () => {
+    assert.deepEqual(
+      interpretExitSidecar({
+        type: "done",
+        summary: "Wrote the review.",
+        status: "partial",
+        artifacts: [{ path: "review.md", description: "Full review" }],
+      }),
+      {
+        reason: "done",
+        exitCode: 0,
+        summary: "Wrote the review.",
+        status: "partial",
+        artifacts: [{ path: "review.md", description: "Full review" }],
+      },
+    );
+  });
+
+  it("ignores an empty artifacts array and an unknown status on a done payload", () => {
+    assert.deepEqual(
+      interpretExitSidecar({ type: "done", summary: "ok", status: "bogus", artifacts: [] }),
+      { reason: "done", exitCode: 0, summary: "ok" },
+    );
+  });
+
   it("decodes error payloads and propagates the message with a non-zero exit code", () => {
     assert.deepEqual(
       interpretExitSidecar({
@@ -2205,6 +2230,91 @@ describe("subagent interruption", () => {
     assert.match(presentation, /subagent_resume/);
     assert.match(presentation, /Resume: pi --session/);
     assert.doesNotMatch(presentation, /ignored when errorMessage is present/);
+  });
+});
+
+describe("subagent handoff payload (B2)", () => {
+  const testApi = (subagentsModule as any).__test__;
+
+  describe("selectSubagentSummary", () => {
+    it("prefers the structured payload summary over the last assistant message", () => {
+      assert.equal(
+        testApi.selectSubagentSummary("payload summary", "last assistant text", "fallback"),
+        "payload summary",
+      );
+    });
+
+    it("falls back to the last assistant message when no payload summary", () => {
+      assert.equal(
+        testApi.selectSubagentSummary(undefined, "last assistant text", "fallback"),
+        "last assistant text",
+      );
+    });
+
+    it("treats a blank payload summary as absent", () => {
+      assert.equal(
+        testApi.selectSubagentSummary("   ", "last assistant text", "fallback"),
+        "last assistant text",
+      );
+    });
+
+    it("uses the fallback when neither payload nor assistant message is present", () => {
+      assert.equal(testApi.selectSubagentSummary(undefined, null, "fallback"), "fallback");
+    });
+  });
+
+  describe("resolveResultPresentation with status and artifacts", () => {
+    it("renders a partial run distinctly from a completed one", () => {
+      const presentation = testApi.resolveResultPresentation(
+        { exitCode: 0, elapsed: 12, summary: "Got halfway.", status: "partial" },
+        "Worker",
+      );
+      assert.match(presentation, /partially completed/);
+      assert.doesNotMatch(presentation, /"Worker" completed \(/);
+    });
+
+    it("renders a blocked run distinctly", () => {
+      const presentation = testApi.resolveResultPresentation(
+        { exitCode: 0, elapsed: 5, summary: "Stuck on auth.", status: "blocked" },
+        "Worker",
+      );
+      assert.match(presentation, /blocked/);
+    });
+
+    it("lists artifact paths with descriptions", () => {
+      const presentation = testApi.resolveResultPresentation(
+        {
+          exitCode: 0,
+          elapsed: 30,
+          summary: "Done.",
+          artifacts: [
+            { path: ".pi/plans/review.md", description: "Full review" },
+            { path: "notes.md" },
+          ],
+        },
+        "Reviewer",
+      );
+      assert.match(presentation, /Artifacts:/);
+      assert.match(presentation, /\.pi\/plans\/review\.md — Full review/);
+      assert.match(presentation, /notes\.md/);
+    });
+
+    it("keeps the plain completed presentation when status is absent", () => {
+      const presentation = testApi.resolveResultPresentation(
+        { exitCode: 0, elapsed: 9, summary: "All done." },
+        "Worker",
+      );
+      assert.match(presentation, /"Worker" completed \(9s\)/);
+      assert.doesNotMatch(presentation, /Artifacts:/);
+    });
+
+    it("still presents a non-zero exit as a failure even with a status", () => {
+      const presentation = testApi.resolveResultPresentation(
+        { exitCode: 1, elapsed: 9, summary: "boom", status: "partial" },
+        "Worker",
+      );
+      assert.match(presentation, /failed \(exit code 1\)/);
+    });
   });
 });
 
