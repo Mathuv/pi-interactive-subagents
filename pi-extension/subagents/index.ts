@@ -153,6 +153,7 @@ interface AgentDefaults {
   sessionMode?: SubagentSessionMode;
   cwd?: string;
   cli?: string;
+  output?: string;
   body?: string;
   disableModelInvocation?: boolean;
 }
@@ -257,6 +258,7 @@ function parseAgentDefinition(content: string, fallbackName: string): AgentDefin
     sessionMode: parseSessionMode(getFrontmatterValue(frontmatter, "session-mode")),
     cwd: getFrontmatterValue(frontmatter, "cwd"),
     cli: getFrontmatterValue(frontmatter, "cli"),
+    output: getFrontmatterValue(frontmatter, "output"),
     body: body || undefined,
     disableModelInvocation:
       getFrontmatterValue(frontmatter, "disable-model-invocation")?.toLowerCase() === "true",
@@ -395,6 +397,16 @@ function loadAgentDefaults(agentName: string, explicitCwd?: string | null): Agen
   }
 
   return null;
+}
+
+/**
+ * Build the launch-prompt line that tells an agent where to save its primary
+ * output, when the agent declares an `output:` path in its frontmatter. Empty
+ * string when unset so the task prompt is unchanged for agents without it.
+ */
+function buildOutputInstruction(output?: string): string {
+  if (!output) return "";
+  return `\n\nSave your primary output to \`${output}\` and report it via subagent_done artifacts.`;
 }
 
 function formatElapsed(seconds: number): string {
@@ -1244,6 +1256,7 @@ export const __test__ = {
   handleSubagentInterrupt,
   resolveResultPresentation,
   selectSubagentSummary,
+  buildOutputInstruction,
   resolveResumeLaunchBehavior,
   loadAgentSettingsFile,
   loadAgentSettings,
@@ -1344,9 +1357,10 @@ async function launchSubagent(
   const systemPromptMode = agentDefs?.systemPromptMode;
   const identityInSystemPrompt = systemPromptMode && identity;
   const roleBlock = identity && !identityInSystemPrompt ? `\n\n${identity}` : "";
+  const outputInstruction = buildOutputInstruction(agentDefs?.output);
   const fullTask = inheritsConversationContext
     ? params.task
-    : `${roleBlock}\n\n${modeHint}\n\n${params.task}\n\n${summaryInstruction}`;
+    : `${roleBlock}\n\n${modeHint}\n\n${params.task}\n\n${summaryInstruction}${outputInstruction}`;
   // ── Claude Code CLI path ──
   if (agentDefs?.cli === "claude") {
     const sentinelFile = `/tmp/pi-claude-${id}-done`;

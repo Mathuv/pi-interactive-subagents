@@ -919,6 +919,50 @@ describe("subagent discovery", () => {
     });
   });
 
+  it("loads the output path from frontmatter", async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(
+        projectAgentsDir,
+        "output-test-agent",
+        [
+          "name: output-test-agent",
+          "model: anthropic/test-output",
+          "output: context.md",
+        ].join("\n"),
+      );
+
+      const loaded = testApi.loadAgentDefaults("output-test-agent");
+      assert.equal(loaded?.output, "context.md");
+    });
+  });
+
+  it("leaves output undefined when not set in frontmatter", async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(
+        projectAgentsDir,
+        "no-output-test-agent",
+        ["name: no-output-test-agent", "model: anthropic/test-no-output"].join("\n"),
+      );
+
+      const loaded = testApi.loadAgentDefaults("no-output-test-agent");
+      assert.equal(loaded?.output, undefined);
+    });
+  });
+
+  describe("buildOutputInstruction", () => {
+    it("returns an empty string when no output is configured", () => {
+      assert.equal(testApi.buildOutputInstruction(undefined), "");
+      assert.equal(testApi.buildOutputInstruction(""), "");
+    });
+
+    it("appends a save-and-report line when output is set", () => {
+      const line = testApi.buildOutputInstruction("context.md");
+      assert.match(line, /Save your primary output to `context\.md`/);
+      assert.match(line, /subagent_done/);
+      assert.ok(line.startsWith("\n\n"), "expected the instruction to be separated by a blank line");
+    });
+  });
+
   it("leaves interactive undefined when not set in frontmatter", async () => {
     await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
       writeAgentFile(
