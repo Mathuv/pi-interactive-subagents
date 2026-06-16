@@ -96,7 +96,7 @@ const SubagentParams = Type.Object({
   agent: Type.Optional(
     Type.String({
       description:
-        "Agent name to load defaults from (e.g. 'worker', 'scout', 'reviewer'). Reads ~/.pi/agent/agents/<name>.md for model, tools, skills.",
+        "Agent name to load defaults from (e.g. 'worker', 'scout', 'reviewer'). Searches <cwd param>/.pi/agents/<name>.md first (when cwd is set), then ./.pi/agents/, ~/.pi/agent/agents/, and the bundled agents. Unknown names fail the call.",
     }),
   ),
   systemPrompt: Type.Optional(
@@ -365,15 +365,30 @@ function resolveEffectiveInteractive(
   return !(agentDefs?.autoExit ?? false);
 }
 
-function loadAgentDefaults(agentName: string): AgentDefaults | null {
-  const configDir = getAgentConfigDir();
-  const paths = [
-    join(process.cwd(), ".pi", "agents", `${agentName}.md`),
-    join(configDir, "agents", `${agentName}.md`),
-    join(getBundledAgentsDir(), `${agentName}.md`),
-  ];
+/**
+ * Resolve the `cwd` tool param to an absolute path (same rule as
+ * resolveSubagentPaths uses for explicit params: relative paths are based on
+ * the parent's process.cwd()). Deliberately ignores agentDefs.cwd — defaults
+ * cannot exist yet while we are still discovering the agent definition.
+ */
+function resolveExplicitCwd(rawCwd: string | undefined): string | null {
+  if (!rawCwd) return null;
+  return rawCwd.startsWith("/") ? rawCwd : join(process.cwd(), rawCwd);
+}
 
-  for (const p of paths) {
+function agentDefinitionSearchPaths(agentName: string, explicitCwd?: string | null): string[] {
+  const paths: string[] = [];
+  if (explicitCwd) paths.push(join(explicitCwd, ".pi", "agents", `${agentName}.md`));
+  paths.push(
+    join(process.cwd(), ".pi", "agents", `${agentName}.md`),
+    join(getAgentConfigDir(), "agents", `${agentName}.md`),
+    join(getBundledAgentsDir(), `${agentName}.md`),
+  );
+  return paths;
+}
+
+function loadAgentDefaults(agentName: string, explicitCwd?: string | null): AgentDefaults | null {
+  for (const p of agentDefinitionSearchPaths(agentName, explicitCwd)) {
     if (!existsSync(p)) continue;
     const parsed = parseAgentDefinition(readFileSync(p, "utf8"), agentName);
     if (parsed) return parsed;
@@ -448,13 +463,26 @@ function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
 function resolveResultPresentation(
   result: Pick<
     SubagentResult,
-    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage"
+    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage" | "sessionFileExists" | "error"
   >,
   name: string,
 ): string {
-  const sessionRef = result.sessionFile
-    ? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
-    : "";
+  // A Session/Resume footer pointing at a file that was never created sends
+  // the orchestrator chasing a session that does not exist (June-4 incident:
+  // four planner retries burned on a wrong theory). Only offer resume when
+  // the session file is actually there.
+  const sessionRef =
+    result.sessionFile && result.sessionFileExists !== false
+      ? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
+      : result.sessionFile
+        ? "\n\nNo session file was created — the process died before pi started the session."
+        : "";
+
+  if (result.error === "cancelled") {
+    // User-initiated cancellation is not a failure; presenting it as
+    // "failed (exit code 1)" misleads the orchestrator into retrying.
+    return `Sub-agent "${name}" cancelled after ${formatElapsed(result.elapsed)}.${sessionRef}`;
+  }
 
   if (result.errorMessage) {
     // Auto-retry exhausted or other agent-loop error. The subagent did not
@@ -476,6 +504,79 @@ function resolveResultPresentation(
 }
 
 /**
+ * Validate an effective model string against pi's model registry before
+ * launching. A bad model (e.g. a stale pin in agents.json) used to cost a
+ * full spawn that died 4-5s later with a provider 400; failing the tool call
+ * instantly is cheaper and names the valid alternatives.
+ *
+ * Returns null when valid, otherwise a user-facing error message.
+ */
+const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+
+function validateModelPreflight(
+  effectiveModel: string,
+  registry: {
+    find(provider: string, modelId: string): unknown;
+    getAll(): Array<{ provider: string; id: string }>;
+  },
+): string | null {
+  const registryHas = (candidate: string): boolean => {
+    const slash = candidate.indexOf("/");
+    if (slash === -1) return false;
+    return !!registry.find(candidate.slice(0, slash), candidate.slice(slash + 1));
+  };
+
+  // Mirrors dist/core/model-resolver.js parseModelPattern, strict CLI --model semantics.
+  let base = effectiveModel;
+  for (;;) {
+    if (registryHas(base)) return null;
+    const lastColon = base.lastIndexOf(":");
+    if (lastColon === -1) break;
+    if (!VALID_THINKING_LEVELS.has(base.slice(lastColon + 1))) break;
+    base = base.slice(0, lastColon);
+  }
+
+  const slash = base.indexOf("/");
+  const provider = slash === -1 ? "" : base.slice(0, slash);
+  const modelId = slash === -1 ? base : base.slice(slash + 1);
+
+  const all = registry.getAll();
+  const sameProvider = provider ? all.filter((m) => m.provider === provider) : [];
+  const idNeedle = modelId.toLowerCase();
+  const matches = sameProvider.length > 0
+    ? sameProvider
+    : all.filter(
+        (m) =>
+          m.id.toLowerCase().includes(idNeedle) || idNeedle.includes(m.id.toLowerCase()),
+      );
+  const suggestions = matches.slice(0, 5).map((m) => `${m.provider}/${m.id}`);
+
+  return (
+    `Error: unknown model "${effectiveModel}" — not in pi's model registry.` +
+    (slash === -1 ? ` Model must be "provider/id".` : "") +
+    (suggestions.length > 0
+      ? `\nDid you mean: ${suggestions.join(", ")}?`
+      : "\nNo similar models found; check `pi --list-models`.")
+  );
+}
+
+/**
+ * Summary for a subagent process that died before pi created its session file.
+ * The only diagnostics in that case are on the terminal screen (e.g. extension
+ * load conflicts printed to stderr), so surface them instead of a bare exit code.
+ */
+function buildStartupFailureSummary(screenOutput: string, exitCode: number): string {
+  const output = screenOutput
+    .split("\n")
+    .filter((line) => !/__SUBAGENT_DONE_\d+__/.test(line))
+    .join("\n")
+    .trim();
+  return output
+    ? `Sub-agent process failed to start (exit ${exitCode}). Terminal output:\n\n${output}`
+    : `Sub-agent process failed to start (exit ${exitCode}). No terminal output was captured.`;
+}
+
+/**
  * Result from running a single subagent.
  */
 interface SubagentResult {
@@ -483,6 +584,8 @@ interface SubagentResult {
   task: string;
   summary: string;
   sessionFile?: string;
+  /** Whether sessionFile existed when the result was produced (false = never created). */
+  sessionFileExists?: boolean;
   claudeSessionId?: string;
   exitCode: number;
   elapsed: number;
@@ -1098,6 +1201,8 @@ export const __test__ = {
   loadAgentSettingsFile,
   loadAgentSettings,
   reloadAgentSettingsForTest,
+  buildStartupFailureSummary,
+  validateModelPreflight,
   resolveEffectiveAgentParams,
   runningSubagents,
   formatElapsed,
@@ -1126,7 +1231,9 @@ async function launchSubagent(
   const startTime = Date.now();
   const id = Math.random().toString(16).slice(2, 10);
 
-  const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null;
+  const agentDefs = params.agent
+    ? loadAgentDefaults(params.agent, resolveExplicitCwd(params.cwd))
+    : null;
   const settings = params.agent ? loadAgentSettings(params.agent) : null;
   const { model: effectiveModel, thinking: effectiveThinking, tools: effectiveTools, skills: effectiveSkills } =
     resolveEffectiveAgentParams(params, settings, agentDefs);
@@ -1497,8 +1604,9 @@ async function watchSubagent(
     }
 
     // Pi subagent result extraction
+    const sessionFileExists = existsSync(sessionFile);
     let summary: string;
-    if (existsSync(sessionFile)) {
+    if (sessionFileExists) {
       const allEntries = getNewEntries(sessionFile, 0);
       summary =
         findLastAssistantMessage(allEntries) ??
@@ -1507,12 +1615,14 @@ async function watchSubagent(
           : result.exitCode !== 0
             ? `Sub-agent exited with code ${result.exitCode}`
             : "Sub-agent exited without output");
+    } else if (result.errorMessage) {
+      summary = `Subagent error: ${result.errorMessage}`;
+    } else if (result.exitCode !== 0) {
+      // The process died before pi created the session file: capture the
+      // terminal screen (startup stderr) before closeSurface() destroys it.
+      summary = buildStartupFailureSummary(readScreen(surface, 100), result.exitCode);
     } else {
-      summary = result.errorMessage
-        ? `Subagent error: ${result.errorMessage}`
-        : result.exitCode !== 0
-          ? `Sub-agent exited with code ${result.exitCode}`
-          : "Sub-agent exited without output";
+      summary = "Sub-agent exited without output";
     }
 
     closeSurface(surface);
@@ -1523,6 +1633,7 @@ async function watchSubagent(
       task,
       summary,
       sessionFile,
+      sessionFileExists,
       exitCode: result.exitCode,
       elapsed,
       ping: result.ping,
@@ -1543,6 +1654,7 @@ async function watchSubagent(
         elapsed: Math.floor((Date.now() - startTime) / 1000),
         error: "cancelled",
         sessionFile,
+        sessionFileExists: existsSync(sessionFile),
       };
     }
     return {
@@ -1628,6 +1740,47 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           };
         }
 
+        // Unknown agent names used to silently launch with no defaults at all
+        // (no model, no deny-tools, no system prompt). Fail the tool call
+        // before any surface is created.
+        const explicitCwd = resolveExplicitCwd(params.cwd);
+        const agentDefs = params.agent ? loadAgentDefaults(params.agent, explicitCwd) : null;
+        if (params.agent && !agentDefs) {
+          const searched = agentDefinitionSearchPaths(params.agent, explicitCwd);
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `Error: unknown agent "${params.agent}" — no definition found. Searched:\n` +
+                  searched.map((p) => `- ${p}`).join("\n"),
+              },
+            ],
+            details: { error: "unknown agent" },
+          };
+        }
+
+        // Model preflight: fail instantly on models pi does not know instead
+        // of paying for a spawn that dies seconds later with a provider 400.
+        // Claude-CLI agents resolve models outside pi's registry — skip them.
+        const modelRegistry = (ctx as any).modelRegistry;
+        const { localAgentDir } = resolveSubagentPaths(params, agentDefs);
+        const usesLocalAgentDir = !!(localAgentDir && existsSync(localAgentDir));
+        // Child resolves against <cwd>/.pi/agent/models.json; parent registry is the wrong oracle.
+        if (agentDefs?.cli !== "claude" && modelRegistry && !usesLocalAgentDir) {
+          const settings = params.agent ? loadAgentSettings(params.agent) : null;
+          const { model: effectiveModel } = resolveEffectiveAgentParams(params, settings, agentDefs);
+          if (effectiveModel) {
+            const modelError = validateModelPreflight(effectiveModel, modelRegistry);
+            if (modelError) {
+              return {
+                content: [{ type: "text", text: modelError }],
+                details: { error: "unknown model" },
+              };
+            }
+          }
+        }
+
         // Validate prerequisites
         if (!isMuxAvailable()) {
           return muxUnavailableResult();
@@ -1696,6 +1849,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   exitCode: result.exitCode,
                   elapsed: result.elapsed,
                   sessionFile: result.sessionFile,
+                  ...(result.error === "cancelled" ? { cancelled: true } : {}),
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
                   ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
                 },
@@ -1856,11 +2010,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       description:
         "List all available subagent definitions. " +
         "Scans project-local .pi/agents/ and global ~/.pi/agent/agents/. " +
-        "Project-local agents override global ones with the same name.",
+        "Project-local agents override global ones with the same name. " +
+        "When spawning with a cwd, the target's <cwd>/.pi/agents/ is searched first.",
       promptSnippet:
         "List all available subagent definitions. " +
         "Scans project-local .pi/agents/ and global ~/.pi/agent/agents/. " +
-        "Project-local agents override global ones with the same name.",
+        "Project-local agents override global ones with the same name. " +
+        "When spawning with a cwd, the target's <cwd>/.pi/agents/ is searched first.",
       parameters: Type.Object({}),
 
       async execute() {
@@ -2214,19 +2370,26 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const name = details.name ?? "subagent";
         const exitCode = details.exitCode ?? 0;
         const errorMessage = typeof details.errorMessage === "string" ? details.errorMessage : "";
-        const failed = exitCode !== 0 || !!errorMessage;
+        const cancelled = !!details.cancelled;
+        const failed = !cancelled && (exitCode !== 0 || !!errorMessage);
         const elapsed = details.elapsed != null ? formatElapsed(details.elapsed) : "?";
-        const bgFn = failed
-          ? (text: string) => theme.bg("toolErrorBg", text)
-          : (text: string) => theme.bg("toolSuccessBg", text);
-        const icon = failed
-          ? theme.fg("error", "✗")
-          : theme.fg("success", "✓");
-        const status = errorMessage
-          ? "failed (provider/agent error)"
+        const bgFn = cancelled
+          ? (text: string) => theme.bg("customMessageBg", text)
           : failed
-            ? `failed (exit ${exitCode})`
-            : "completed";
+            ? (text: string) => theme.bg("toolErrorBg", text)
+            : (text: string) => theme.bg("toolSuccessBg", text);
+        const icon = cancelled
+          ? theme.fg("muted", "◼")
+          : failed
+            ? theme.fg("error", "✗")
+            : theme.fg("success", "✓");
+        const status = cancelled
+          ? "cancelled"
+          : errorMessage
+            ? "failed (provider/agent error)"
+            : failed
+              ? `failed (exit ${exitCode})`
+              : "completed";
         const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
 
         const header = `${icon} ${theme.fg("toolTitle", theme.bold(name))}${agentTag} ${theme.fg("dim", "—")} ${status} ${theme.fg("dim", `(${elapsed})`)}`;
@@ -2237,6 +2400,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           .replace(/\n\nSession: .+\nResume: .+$/, "")
           .replace(`Sub-agent "${name}" completed (${elapsed}).\n\n`, "")
           .replace(`Sub-agent "${name}" failed (exit code ${exitCode}).\n\n`, "")
+          .replace(`Sub-agent "${name}" cancelled after ${elapsed}.`, "")
           .replace(
             new RegExp(
               `^Sub-agent "${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" failed after ${elapsed} \\(provider/agent error — auto-retry exhausted\\)\\.\\n\\n`,

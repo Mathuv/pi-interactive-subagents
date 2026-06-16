@@ -526,12 +526,16 @@ describe("status.ts", () => {
     );
   });
 
-  it("reports when neither local nor shared config exists", () => {
+  it("disables status when neither local nor shared config exists", () => {
+    // A packaging that drops config.json.example must not make the module
+    // import throw (pi would exit 1 at startup). Degrade to disabled instead.
     withTempDir((dir) => {
-      assert.throws(
-        () => loadStatusConfig(join(dir, "config.json"), join(dir, "config.json.example")),
-        /Missing subagent status config\. Expected .*config\.json.*or.*config\.json\.example/,
+      const config = loadStatusConfig(
+        join(dir, "config.json"),
+        join(dir, "config.json.example"),
       );
+
+      assert.deepEqual(config, { enabled: false, lineLimit: 4 });
     });
   });
 
@@ -927,6 +931,67 @@ describe("subagent discovery", () => {
 
       const loaded = testApi.loadAgentDefaults("interactive-unset-test-agent");
       assert.equal(loaded?.interactive, undefined);
+    });
+  });
+
+  it("loadAgentDefaults finds definitions under an explicit target cwd", async () => {
+    await withIsolatedAgentEnv(async ({ projectDir }) => {
+      const targetDir = join(projectDir, "target-repo");
+      writeAgentFile(
+        join(targetDir, ".pi", "agents"),
+        "cwd-only-test-agent",
+        ["name: cwd-only-test-agent", "model: anthropic/test-cwd-only"].join("\n"),
+      );
+
+      // Invisible from the parent cwd (June-4 bug: silently launched with null defs).
+      assert.equal(testApi.loadAgentDefaults("cwd-only-test-agent"), null);
+
+      const loaded = testApi.loadAgentDefaults("cwd-only-test-agent", targetDir);
+      assert.equal(loaded?.model, "anthropic/test-cwd-only");
+    });
+  });
+
+  it("explicit target cwd definition wins over the parent cwd definition", async () => {
+    await withIsolatedAgentEnv(async ({ projectDir, projectAgentsDir }) => {
+      const targetDir = join(projectDir, "target-repo");
+      writeAgentFile(
+        projectAgentsDir,
+        "shadowed-test-agent",
+        ["name: shadowed-test-agent", "model: anthropic/from-parent"].join("\n"),
+      );
+      writeAgentFile(
+        join(targetDir, ".pi", "agents"),
+        "shadowed-test-agent",
+        ["name: shadowed-test-agent", "model: anthropic/from-target"].join("\n"),
+      );
+
+      const loaded = testApi.loadAgentDefaults("shadowed-test-agent", targetDir);
+      assert.equal(loaded?.model, "anthropic/from-target");
+    });
+  });
+
+  it("subagent tool fails fast for unknown agent names, listing searched paths", async () => {
+    await withIsolatedAgentEnv(async () => {
+      const { api, registeredTools } = createMockExtensionApi();
+      (subagentsModule as any).default(api);
+      const tool = registeredTools.find((t: any) => t.name === "subagent");
+      assert.ok(tool, "expected subagent tool to be registered");
+
+      const result = await tool.execute(
+        "tc1",
+        { name: "X", task: "T", agent: "no-such-test-agent" },
+        undefined,
+        undefined,
+        {},
+      );
+
+      assert.equal(result.details.error, "unknown agent");
+      assert.match(result.content[0].text, /unknown agent "no-such-test-agent"/i);
+      assert.match(
+        result.content[0].text,
+        /\.pi[/\\]agents[/\\]no-such-test-agent\.md/,
+        "expected searched paths to be listed",
+      );
     });
   });
 
@@ -2097,6 +2162,283 @@ describe("subagent interruption", () => {
     assert.match(presentation, /subagent_resume/);
     assert.match(presentation, /Resume: pi --session/);
     assert.doesNotMatch(presentation, /ignored when errorMessage is present/);
+  });
+});
+
+describe("startup failure reporting", () => {
+  it("omits the Resume footer and notes no session file was created", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const presentation = testApi.resolveResultPresentation(
+      {
+        exitCode: 1,
+        elapsed: 4,
+        summary: "Sub-agent process failed to start (exit 1).",
+        sessionFile: "/tmp/never-created.jsonl",
+        sessionFileExists: false,
+      },
+      "Planner",
+    );
+
+    assert.match(presentation, /failed \(exit code 1\)/);
+    assert.match(presentation, /No session file was created/);
+    assert.doesNotMatch(presentation, /Resume: pi --session/);
+    assert.doesNotMatch(presentation, /Session: /);
+  });
+
+  it("keeps the Resume footer when the session file exists", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const presentation = testApi.resolveResultPresentation(
+      {
+        exitCode: 1,
+        elapsed: 30,
+        summary: "Sub-agent exited with code 1",
+        sessionFile: "/tmp/subagent.jsonl",
+        sessionFileExists: true,
+      },
+      "Worker",
+    );
+
+    assert.match(presentation, /Resume: pi --session \/tmp\/subagent\.jsonl/);
+    assert.doesNotMatch(presentation, /No session file was created/);
+  });
+
+  it("buildStartupFailureSummary strips sentinel lines and keeps terminal output", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const summary = testApi.buildStartupFailureSummary(
+      'Error: Failed to load extension "/x/dup.ts": Tool "subagent" conflicts\n__SUBAGENT_DONE_3__\n',
+      1,
+    );
+
+    assert.match(summary, /failed to start \(exit 1\)/);
+    assert.match(summary, /Tool "subagent" conflicts/);
+    assert.doesNotMatch(summary, /__SUBAGENT_DONE_/);
+  });
+
+  it("buildStartupFailureSummary notes when no terminal output was captured", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const summary = testApi.buildStartupFailureSummary("__SUBAGENT_DONE_2__\n\n", 7);
+
+    assert.match(summary, /failed to start \(exit 7\)/);
+    assert.match(summary, /[Nn]o terminal output/);
+  });
+});
+
+describe("model preflight", () => {
+  const testApi = (subagentsModule as any).__test__;
+
+  function stubRegistry() {
+    const models = [
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      { provider: "openai-codex", id: "gpt-5.4" },
+      { provider: "opencode-go", id: "deepseek-v4-flash" },
+      { provider: "amazon-bedrock", id: "amazon.nova-lite-v1:0" },
+      { provider: "openrouter", id: "moonshotai/kimi-k2.5:exacto" },
+    ];
+    return {
+      find(provider: string, modelId: string) {
+        return models.find((m) => m.provider === provider && m.id === modelId);
+      },
+      getAll() {
+        return models;
+      },
+    };
+  }
+
+  it("accepts known models", () => {
+    assert.equal(testApi.validateModelPreflight("openai-codex/gpt-5.4", stubRegistry()), null);
+  });
+
+  it("accepts models with colons in their ids", () => {
+    assert.equal(
+      testApi.validateModelPreflight("amazon-bedrock/amazon.nova-lite-v1:0", stubRegistry()),
+      null,
+    );
+    assert.equal(
+      testApi.validateModelPreflight("openrouter/moonshotai/kimi-k2.5:exacto", stubRegistry()),
+      null,
+    );
+  });
+
+  it("accepts colon-id models with a trailing thinking level", () => {
+    assert.equal(
+      testApi.validateModelPreflight("amazon-bedrock/amazon.nova-lite-v1:0:high", stubRegistry()),
+      null,
+    );
+  });
+
+  it("accepts all valid thinking level suffixes", () => {
+    for (const level of ["off", "minimal", "low", "medium", "high", "xhigh"]) {
+      assert.equal(
+        testApi.validateModelPreflight(`anthropic/claude-sonnet-4-6:${level}`, stubRegistry()),
+        null,
+      );
+    }
+  });
+
+  it("rejects literal :thinking — not a valid pi thinking level", () => {
+    const error = testApi.validateModelPreflight(
+      "anthropic/claude-sonnet-4-6:thinking",
+      stubRegistry(),
+    );
+
+    assert.ok(error, "expected a validation error");
+    assert.match(error, /anthropic\/claude-sonnet-4-6:thinking/);
+    assert.match(error, /anthropic\/claude-sonnet-4-6/);
+  });
+
+  it("rejects unknown models and suggests the provider's models", () => {
+    // The June-2/3 incident: reviewer pinned to gpt-5.3-codex, which the
+    // ChatGPT-account provider rejects — each spawn burned 4-5s before dying.
+    const error = testApi.validateModelPreflight("openai-codex/gpt-5.3-codex", stubRegistry());
+
+    assert.ok(error, "expected a validation error");
+    assert.match(error, /openai-codex\/gpt-5\.3-codex/);
+    assert.match(error, /openai-codex\/gpt-5\.4/);
+  });
+
+  it("rejects unknown models even with a valid thinking suffix", () => {
+    const error = testApi.validateModelPreflight("openai-codex/gpt-5.3-codex:high", stubRegistry());
+
+    assert.ok(error, "expected a validation error");
+    assert.match(error, /openai-codex\/gpt-5\.3-codex:high/);
+    assert.match(error, /openai-codex\/gpt-5\.4/);
+  });
+
+  it("rejects model strings without a provider prefix", () => {
+    const error = testApi.validateModelPreflight("claude-sonnet-4-6", stubRegistry());
+
+    assert.ok(error, "expected a validation error");
+    assert.match(error, /provider\/id/);
+    assert.match(error, /anthropic\/claude-sonnet-4-6/);
+  });
+
+  it("subagent tool fails fast on unknown model before any launch", async () => {
+    const { api, registeredTools } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const tool = registeredTools.find((t: any) => t.name === "subagent");
+    assert.ok(tool, "expected subagent tool to be registered");
+
+    const result = await tool.execute(
+      "tc1",
+      { name: "X", task: "T", model: "nonexistent/foo" },
+      undefined,
+      undefined,
+      { modelRegistry: stubRegistry() },
+    );
+
+    assert.equal(result.details.error, "unknown model");
+    assert.match(result.content[0].text, /nonexistent\/foo/);
+  });
+
+  it("skips model preflight when target cwd has its own .pi/agent dir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "subagent-local-agent-"));
+    try {
+      mkdirSync(join(dir, ".pi", "agent"), { recursive: true });
+      const { api, registeredTools } = createMockExtensionApi();
+      (subagentsModule as any).default(api);
+      const tool = registeredTools.find((t: any) => t.name === "subagent");
+      assert.ok(tool, "expected subagent tool to be registered");
+
+      const result = await tool.execute(
+        "tc1",
+        { name: "X", task: "T", model: "childonly/some-model", cwd: dir },
+        undefined,
+        undefined,
+        {
+          modelRegistry: stubRegistry(),
+          sessionManager: { getSessionFile: () => null },
+        },
+      );
+
+      assert.notEqual(result.details?.error, "unknown model");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still preflights when target cwd has no local agent dir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "subagent-no-local-agent-"));
+    try {
+      const { api, registeredTools } = createMockExtensionApi();
+      (subagentsModule as any).default(api);
+      const tool = registeredTools.find((t: any) => t.name === "subagent");
+      assert.ok(tool, "expected subagent tool to be registered");
+
+      const result = await tool.execute(
+        "tc1",
+        { name: "X", task: "T", model: "childonly/some-model", cwd: dir },
+        undefined,
+        undefined,
+        {
+          modelRegistry: stubRegistry(),
+          sessionManager: { getSessionFile: () => null },
+        },
+      );
+
+      assert.equal(result.details.error, "unknown model");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("cancelled subagent presentation", () => {
+  it("presents cancellation as cancelled, not failed", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const presentation = testApi.resolveResultPresentation(
+      {
+        exitCode: 1,
+        elapsed: 65,
+        summary: "Subagent cancelled.",
+        sessionFile: "/tmp/subagent.jsonl",
+        sessionFileExists: true,
+        error: "cancelled",
+      },
+      "Worker",
+    );
+
+    assert.match(presentation, /Sub-agent "Worker" cancelled after 1m 5s\./);
+    assert.doesNotMatch(presentation, /failed/);
+    assert.match(presentation, /Resume: pi --session/);
+  });
+
+  it("renders cancelled results with neutral, non-error styling", () => {
+    const { api, registeredMessageRenderers } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const entry = registeredMessageRenderers.find((e) => e.name === "subagent_result");
+    assert.ok(entry, "expected subagent_result renderer to be registered");
+
+    const bgColors: string[] = [];
+    const theme = {
+      fg(_color: string, text: string) {
+        return text;
+      },
+      bg(color: string, text: string) {
+        bgColors.push(color);
+        return text;
+      },
+      bold(text: string) {
+        return text;
+      },
+    };
+
+    const rendered = entry.renderer(
+      {
+        customType: "subagent_result",
+        content: 'Sub-agent "Worker" cancelled after 1m 5s.',
+        details: { name: "Worker", exitCode: 1, elapsed: 65, cancelled: true },
+      },
+      { expanded: true },
+      theme,
+    );
+    const output = rendered.render(80).join("\n");
+
+    assert.match(output, /cancelled/);
+    assert.doesNotMatch(output, /failed/);
+    assert.ok(
+      !bgColors.includes("toolErrorBg"),
+      `expected neutral background, got: ${bgColors.join(", ")}`,
+    );
   });
 });
 
