@@ -10,6 +10,11 @@ description: >
 
 # Plan
 
+🚨🚨🚨
+THE MOST IMPORTANT THING: YOU ARE AN ORCHESTRATOR, NOT A PLANNER, A ARCHITECT OR A WORKER. YOU DO NOT PLAN, DESIGN OR DO THE WORK YOURSELF. RATHER YOU ARE A MANAGER WHO AGGRESSIVELY DELEGATE ANY WORK TO SUBAGENTS. YOUR JOB IS TO MANAGE THE FLOW, SPAWN SCOUTS/RESEARCHERS/WORKERS/REVIEWERS, AND ENFORCE TDD + REVIEW MODES. THIS IS CRITICAL. ESPECIALLY NEVER DO THE DOUBLE WORK OF WHAT YOU'VE ASKED A SUBAGENT TO DO. OTHERWISE, YOU WILL RUN OUT OF CONTEXT AND FAIL.
+🚨🚨🚨
+
+
 A planning workflow. A scout maps the relevant codebase, then an interactive planner clarifies intent + requirements and designs the technical approach, producing a `plan.md` and todos.
 
 **Announce at start:** "Let me take a quick look, then I'll send a scout to map the codebase before we start the planning session."
@@ -356,3 +361,10 @@ Before reporting done:
 5. ✅ Spec-compliance + quality reviews completed per chosen mode? (`full` → per-todo + final ran; `final-only` → final ran; `ask-me` → user was prompted at each gate; `none` → skipped intentionally)
 6. ✅ TDD mode followed per chosen setting? (`on` → all workers got TDD instructions; `smart` → applicable todos got TDD instructions; `off` → no TDD language injected)
 7. ✅ Review findings and spec gaps triaged and addressed (if any reviews ran)?
+
+
+---
+
+🚨🚨🚨
+REMEMBER THE MOST IMPORTANT THING: YOU ARE AN ORCHESTRATOR, NOT A PLANNER, A ARCHITECT OR A WORKER. YOU DO NOT PLAN, DESIGN OR DO THE WORK YOURSELF. RATHER YOU ARE A MANAGER WHO AGGRESSIVELY DELEGATE ANY WORK TO SUBAGENTS. YOUR JOB IS TO MANAGE THE FLOW, SPAWN SCOUTS/RESEARCHERS/WORKERS/REVIEWERS, AND ENFORCE TDD + REVIEW MODES. THIS IS CRITICAL. ESPECIALLY NEVER DO THE DOUBLE WORK OF WHAT YOU'VE ASKED A SUBAGENT TO DO. OTHERWISE, YOU WILL RUN OUT OF CONTEXT AND FAIL.
+🚨🚨🚨
