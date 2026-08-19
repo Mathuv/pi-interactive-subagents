@@ -58,7 +58,7 @@ import {
   type ActivityReadResult,
   type SubagentActivityState,
 } from "./activity.ts";
-import { PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE } from "./subagent-done.ts";
+import { PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE, RUNNING_SUBAGENTS_KEY } from "./subagent-done.ts";
 
 /** Absolute path to `pi-extension/subagents`. https://github.com/nodejs/node/issues/37845 */
 const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -69,7 +69,6 @@ const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
 const WIDGET_INTERVAL_KEY = Symbol.for("pi-subagents/widget-interval");
 const STATUS_INTERVAL_KEY = Symbol.for("pi-subagents/status-interval");
 const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
-const RUNNING_SUBAGENTS_KEY = Symbol.for("pi-subagents/running-subagents");
 
 {
   const prevInterval = (globalThis as any)[WIDGET_INTERVAL_KEY];
@@ -84,7 +83,7 @@ const RUNNING_SUBAGENTS_KEY = Symbol.for("pi-subagents/running-subagents");
   }
   const prevAbort = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
   if (prevAbort) prevAbort.abort();
-  (globalThis as any)[POLL_ABORT_KEY] = new AbortController();
+  ensureLivePollController();
 }
 
 function getModuleAbortSignal(): AbortSignal {
@@ -97,7 +96,7 @@ function getModuleAbortSignal(): AbortSignal {
  * replacements, so module evaluation does not run after the
  * session_shutdown handler aborts the controller.
  */
-export function ensureLivePollController(): void {
+function ensureLivePollController(): void {
   const current = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
   if (!current || current.signal.aborted) {
     (globalThis as any)[POLL_ABORT_KEY] = new AbortController();
@@ -1221,6 +1220,8 @@ export const __test__ = {
   resolveEffectiveAgentParams,
   runningSubagents,
   formatElapsed,
+  ensureLivePollController,
+  POLL_ABORT_KEY,
 };
 
 function startWidgetRefresh() {

@@ -53,7 +53,9 @@ import subagentDoneInit, {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
   findLatestAssistantError,
+  runningDescendantCount,
   PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE,
+  RUNNING_SUBAGENTS_KEY,
 } from "../pi-extension/subagents/subagent-done.ts";
 import { __pollForExitTest__ } from "../pi-extension/subagents/cmux.ts";
 
@@ -115,50 +117,6 @@ function createMockExtensionApi() {
     } as any,
   };
 }
-
-describe("ensureLivePollController", () => {
-  const pollAbortKey = Symbol.for("pi-subagents/poll-abort-controller");
-  let originalController: AbortController | undefined;
-
-  before(() => {
-    originalController = (globalThis as any)[pollAbortKey];
-  });
-
-  after(() => {
-    (globalThis as any)[pollAbortKey] = originalController ?? new AbortController();
-  });
-
-  it("creates a live controller when none exists", () => {
-    delete (globalThis as any)[pollAbortKey];
-
-    subagentsModule.ensureLivePollController();
-
-    const controller = (globalThis as any)[pollAbortKey] as AbortController;
-    assert.ok(controller);
-    assert.equal(controller.signal.aborted, false);
-  });
-
-  it("replaces an aborted controller", () => {
-    const abortedController = new AbortController();
-    abortedController.abort();
-    (globalThis as any)[pollAbortKey] = abortedController;
-
-    subagentsModule.ensureLivePollController();
-
-    const controller = (globalThis as any)[pollAbortKey] as AbortController;
-    assert.notEqual(controller, abortedController);
-    assert.equal(controller.signal.aborted, false);
-  });
-
-  it("keeps a live controller", () => {
-    const liveController = new AbortController();
-    (globalThis as any)[pollAbortKey] = liveController;
-
-    subagentsModule.ensureLivePollController();
-
-    assert.equal((globalThis as any)[pollAbortKey], liveController);
-  });
-});
 
 function restoreEnvVar(name: string, value: string | undefined) {
   if (value === undefined) {
@@ -912,6 +870,51 @@ describe("status.ts", () => {
   });
 });
 
+describe("ensureLivePollController", () => {
+  const testApi = (subagentsModule as any).__test__;
+  const pollAbortKey = testApi.POLL_ABORT_KEY;
+  let originalController: AbortController | undefined;
+
+  before(() => {
+    originalController = (globalThis as any)[pollAbortKey];
+  });
+
+  after(() => {
+    (globalThis as any)[pollAbortKey] = originalController;
+  });
+
+  it("creates a live controller when none exists", () => {
+    delete (globalThis as any)[pollAbortKey];
+
+    testApi.ensureLivePollController();
+
+    const controller = (globalThis as any)[pollAbortKey] as AbortController;
+    assert.ok(controller);
+    assert.equal(controller.signal.aborted, false);
+  });
+
+  it("replaces an aborted controller", () => {
+    const abortedController = new AbortController();
+    abortedController.abort();
+    (globalThis as any)[pollAbortKey] = abortedController;
+
+    testApi.ensureLivePollController();
+
+    const controller = (globalThis as any)[pollAbortKey] as AbortController;
+    assert.notEqual(controller, abortedController);
+    assert.equal(controller.signal.aborted, false);
+  });
+
+  it("keeps a live controller", () => {
+    const liveController = new AbortController();
+    (globalThis as any)[pollAbortKey] = liveController;
+
+    testApi.ensureLivePollController();
+
+    assert.equal((globalThis as any)[pollAbortKey], liveController);
+  });
+});
+
 describe("subagent discovery", () => {
   const testApi = (subagentsModule as any).__test__;
 
@@ -1471,12 +1474,12 @@ describe("subagent-done.ts", () => {
   describe("shouldAutoExitOnAgentEnd", () => {
     it("auto-exits after normal completion when there was no takeover", () => {
       const messages = [{ role: "assistant", stopReason: "stop" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
+      assert.equal(shouldAutoExitOnAgentEnd(false, messages, 0), true);
     });
 
     it("auto-exits after normal completion even when the user sent the prompt", () => {
       const messages = [{ role: "assistant", stopReason: "stop" }];
-      assert.equal(shouldAutoExitOnAgentEnd(true, messages), true);
+      assert.equal(shouldAutoExitOnAgentEnd(true, messages, 0), true);
     });
 
     it("stays open while a descendant runs", () => {
@@ -1484,19 +1487,9 @@ describe("subagent-done.ts", () => {
       assert.equal(shouldAutoExitOnAgentEnd(false, messages, 1), false);
     });
 
-    it("keeps normal completion behavior after descendants finish", () => {
-      const messages = [{ role: "assistant", stopReason: "stop" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages, 0), true);
-    });
-
-    it("keeps normal completion behavior when descendant count is omitted", () => {
-      const messages = [{ role: "assistant", stopReason: "stop" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
-    });
-
     it("stays open after Escape aborts the run", () => {
       const messages = [{ role: "assistant", stopReason: "aborted" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages), false);
+      assert.equal(shouldAutoExitOnAgentEnd(false, messages, 0), false);
     });
 
     it("still exits when the latest turn ended with stopReason=error", () => {
@@ -1504,7 +1497,22 @@ describe("subagent-done.ts", () => {
       // parent is woken. The error sidecar (written separately) carries the
       // failure detail; staying open would just strand the worker.
       const messages = [{ role: "assistant", stopReason: "error", errorMessage: "529 overloaded" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
+      assert.equal(shouldAutoExitOnAgentEnd(false, messages, 0), true);
+    });
+  });
+
+  describe("runningDescendantCount", () => {
+    it("reads the map that index.ts publishes on globalThis", () => {
+      const runningSubagents = (subagentsModule as any).__test__.runningSubagents;
+      assert.equal((globalThis as any)[RUNNING_SUBAGENTS_KEY], runningSubagents);
+
+      runningSubagents.set("descendant-seam-test", {});
+      try {
+        assert.equal(runningDescendantCount(), 1);
+      } finally {
+        runningSubagents.delete("descendant-seam-test");
+      }
+      assert.equal(runningDescendantCount(), 0);
     });
   });
 
