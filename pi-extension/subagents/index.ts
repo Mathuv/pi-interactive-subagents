@@ -58,7 +58,7 @@ import {
   type ActivityReadResult,
   type SubagentActivityState,
 } from "./activity.ts";
-import { PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE } from "./subagent-done.ts";
+import { PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE, RUNNING_SUBAGENTS_KEY } from "./subagent-done.ts";
 
 /** Absolute path to `pi-extension/subagents`. https://github.com/nodejs/node/issues/37845 */
 const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -83,11 +83,24 @@ const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
   }
   const prevAbort = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
   if (prevAbort) prevAbort.abort();
-  (globalThis as any)[POLL_ABORT_KEY] = new AbortController();
+  ensureLivePollController();
 }
 
 function getModuleAbortSignal(): AbortSignal {
   return ((globalThis as any)[POLL_ABORT_KEY] as AbortController).signal;
+}
+
+/**
+ * Re-arm the module poll controller when it is missing or aborted.
+ * pi >= 0.79.9 reuses the imported module across same-directory session
+ * replacements, so module evaluation does not run after the
+ * session_shutdown handler aborts the controller.
+ */
+function ensureLivePollController(): void {
+  const current = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
+  if (!current || current.signal.aborted) {
+    (globalThis as any)[POLL_ABORT_KEY] = new AbortController();
+  }
 }
 
 const SubagentParams = Type.Object({
@@ -629,6 +642,7 @@ interface RunningSubagent {
 
 /** All currently running subagents, keyed by id. */
 const runningSubagents = new Map<string, RunningSubagent>();
+(globalThis as any)[RUNNING_SUBAGENTS_KEY] = runningSubagents;
 
 // ── Widget management ──
 
@@ -1206,6 +1220,8 @@ export const __test__ = {
   resolveEffectiveAgentParams,
   runningSubagents,
   formatElapsed,
+  ensureLivePollController,
+  POLL_ABORT_KEY,
 };
 
 function startWidgetRefresh() {
@@ -1669,6 +1685,8 @@ async function watchSubagent(
 }
 
 export default function subagentsExtension(pi: ExtensionAPI) {
+  ensureLivePollController();
+
   // Capture the UI context for widget updates
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;
