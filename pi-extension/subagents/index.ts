@@ -69,6 +69,7 @@ const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
 const WIDGET_INTERVAL_KEY = Symbol.for("pi-subagents/widget-interval");
 const STATUS_INTERVAL_KEY = Symbol.for("pi-subagents/status-interval");
 const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
+const RUNNING_SUBAGENTS_KEY = Symbol.for("pi-subagents/running-subagents");
 
 {
   const prevInterval = (globalThis as any)[WIDGET_INTERVAL_KEY];
@@ -88,6 +89,19 @@ const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
 
 function getModuleAbortSignal(): AbortSignal {
   return ((globalThis as any)[POLL_ABORT_KEY] as AbortController).signal;
+}
+
+/**
+ * Re-arm the module poll controller when it is missing or aborted.
+ * pi >= 0.79.9 reuses the imported module across same-directory session
+ * replacements, so module evaluation does not run after the
+ * session_shutdown handler aborts the controller.
+ */
+export function ensureLivePollController(): void {
+  const current = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
+  if (!current || current.signal.aborted) {
+    (globalThis as any)[POLL_ABORT_KEY] = new AbortController();
+  }
 }
 
 const SubagentParams = Type.Object({
@@ -629,6 +643,7 @@ interface RunningSubagent {
 
 /** All currently running subagents, keyed by id. */
 const runningSubagents = new Map<string, RunningSubagent>();
+(globalThis as any)[RUNNING_SUBAGENTS_KEY] = runningSubagents;
 
 // ── Widget management ──
 
@@ -1669,6 +1684,8 @@ async function watchSubagent(
 }
 
 export default function subagentsExtension(pi: ExtensionAPI) {
+  ensureLivePollController();
+
   // Capture the UI context for widget updates
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;

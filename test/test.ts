@@ -116,6 +116,50 @@ function createMockExtensionApi() {
   };
 }
 
+describe("ensureLivePollController", () => {
+  const pollAbortKey = Symbol.for("pi-subagents/poll-abort-controller");
+  let originalController: AbortController | undefined;
+
+  before(() => {
+    originalController = (globalThis as any)[pollAbortKey];
+  });
+
+  after(() => {
+    (globalThis as any)[pollAbortKey] = originalController ?? new AbortController();
+  });
+
+  it("creates a live controller when none exists", () => {
+    delete (globalThis as any)[pollAbortKey];
+
+    subagentsModule.ensureLivePollController();
+
+    const controller = (globalThis as any)[pollAbortKey] as AbortController;
+    assert.ok(controller);
+    assert.equal(controller.signal.aborted, false);
+  });
+
+  it("replaces an aborted controller", () => {
+    const abortedController = new AbortController();
+    abortedController.abort();
+    (globalThis as any)[pollAbortKey] = abortedController;
+
+    subagentsModule.ensureLivePollController();
+
+    const controller = (globalThis as any)[pollAbortKey] as AbortController;
+    assert.notEqual(controller, abortedController);
+    assert.equal(controller.signal.aborted, false);
+  });
+
+  it("keeps a live controller", () => {
+    const liveController = new AbortController();
+    (globalThis as any)[pollAbortKey] = liveController;
+
+    subagentsModule.ensureLivePollController();
+
+    assert.equal((globalThis as any)[pollAbortKey], liveController);
+  });
+});
+
 function restoreEnvVar(name: string, value: string | undefined) {
   if (value === undefined) {
     delete process.env[name];
@@ -1433,6 +1477,21 @@ describe("subagent-done.ts", () => {
     it("auto-exits after normal completion even when the user sent the prompt", () => {
       const messages = [{ role: "assistant", stopReason: "stop" }];
       assert.equal(shouldAutoExitOnAgentEnd(true, messages), true);
+    });
+
+    it("stays open while a descendant runs", () => {
+      const messages = [{ role: "assistant", stopReason: "stop" }];
+      assert.equal(shouldAutoExitOnAgentEnd(false, messages, 1), false);
+    });
+
+    it("keeps normal completion behavior after descendants finish", () => {
+      const messages = [{ role: "assistant", stopReason: "stop" }];
+      assert.equal(shouldAutoExitOnAgentEnd(false, messages, 0), true);
+    });
+
+    it("keeps normal completion behavior when descendant count is omitted", () => {
+      const messages = [{ role: "assistant", stopReason: "stop" }];
+      assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
     });
 
     it("stays open after Escape aborts the run", () => {

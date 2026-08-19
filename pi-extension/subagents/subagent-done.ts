@@ -11,6 +11,13 @@ import { createSubagentActivityRecorder } from "./activity.ts";
 
 export const PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE = "PI_SUBAGENT_BOOTSTRAP_PROMPT_FILE";
 
+const RUNNING_SUBAGENTS_KEY = Symbol.for("pi-subagents/running-subagents");
+
+function runningDescendantCount(): number {
+  const map = (globalThis as any)[RUNNING_SUBAGENTS_KEY] as Map<string, unknown> | undefined;
+  return map?.size ?? 0;
+}
+
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted;
 }
@@ -18,7 +25,12 @@ export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
 export function shouldAutoExitOnAgentEnd(
   _userTookOver: boolean,
   messages: any[] | undefined,
+  runningDescendants = 0,
 ): boolean {
+  // Do not exit while descendants run. Shutdown would abort their watchers
+  // and close their panes. The next agent_end re-evaluates this condition.
+  if (runningDescendants > 0) return false;
+
   // Manual input should not strand an auto-exit subagent. If the latest agent
   // turn completed normally, close the session. Escape/abort still leaves it
   // open for inspection or another prompt.
@@ -175,7 +187,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_end", (event, ctx) => {
     const messages = (event as any).messages as any[] | undefined;
-    const shouldExit = autoExit && shouldAutoExitOnAgentEnd(userTookOver, messages);
+    const shouldExit =
+      autoExit && shouldAutoExitOnAgentEnd(userTookOver, messages, runningDescendantCount());
 
     if (shouldExit) {
       // Surface stopReason: "error" turns (auto-retry exhausted, provider
